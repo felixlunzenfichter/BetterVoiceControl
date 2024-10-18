@@ -8,8 +8,14 @@ struct VoiceControlledMacApp: App {
     let api = OpenAIRealtimeAPI()
     
     init() {
-        requestMicrophonePermissions()
-        api.connect()
+//         requestMicrophonePermissions()
+//        api.connect()
+        
+        // Example usage (run this inside your app's main entry point or a function)
+//        scanUIAndPrintElementDetails()
+        Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { _ in
+            performTraversal()
+        }
     }
     
     var body: some Scene {
@@ -264,3 +270,95 @@ func pcm16ToFloat32(pcmData: Data) -> [Float] {
 }
 
 let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24000, channels: 1, interleaved: true)!
+
+
+import Foundation
+import Cocoa
+import ApplicationServices
+
+func isAccessibilityEnabled() -> Bool {
+    let options = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
+    return AXIsProcessTrustedWithOptions(options)
+}
+
+func getFrontmostApp() -> NSRunningApplication? {
+    return NSWorkspace.shared.frontmostApplication
+}
+
+func traverseUI(element: AXUIElement, depth: Int = 0, visited: inout Set<AXUIElement>) {
+    let indent = String(repeating: "    ", count: depth)
+    
+    if visited.contains(element) {
+        return
+    }
+    visited.insert(element)
+    
+    // Fetch desired attributes individually
+    var roleValue: CFTypeRef?
+    var titleValue: CFTypeRef?
+    var descriptionValue: CFTypeRef?
+    var roleDescriptionValue: CFTypeRef?
+    var identifierValue: CFTypeRef?
+    
+    AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue)
+    AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleValue)
+    AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &descriptionValue)
+    AXUIElementCopyAttributeValue(element, kAXRoleDescriptionAttribute as CFString, &roleDescriptionValue)
+    AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &identifierValue)
+    
+    let role = roleValue as? String ?? "Unknown"
+    let title = titleValue as? String ?? ""
+    let description = descriptionValue as? String ?? ""
+    let roleDescription = roleDescriptionValue as? String ?? role
+    let identifier = identifierValue as? String ?? ""
+    
+    // Construct a more informative description
+    var elementInfo = "\(roleDescription): "
+    if !title.isEmpty {
+        elementInfo += "\(title)"
+    } else if !description.isEmpty {
+        elementInfo += "\(description)"
+    } else if !identifier.isEmpty {
+        elementInfo += "\(identifier)"
+    } else {
+        elementInfo += "(No Title/Description)"
+    }
+    
+    print("\(indent)\(elementInfo)")
+    
+    // Get and print available actions
+    var actionNames: CFArray?
+    let actionError = AXUIElementCopyActionNames(element, &actionNames)
+    if actionError == .success, let actions = actionNames as? [String], !actions.isEmpty {
+        print("\(indent)Available Actions: \(actions)")
+    }
+    
+    // Recursively traverse child elements
+    var childrenValue: CFTypeRef?
+    let childrenError = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue)
+    if childrenError == .success, let children = childrenValue as? [AXUIElement] {
+        for child in children {
+            traverseUI(element: child, depth: depth + 1, visited: &visited)
+        }
+    }
+}
+
+func performTraversal() {
+    if !isAccessibilityEnabled() {
+        print("Accessibility permissions not granted.")
+        return
+    }
+    
+    guard let app = getFrontmostApp() else {
+        print("No frontmost application found.")
+        return
+    }
+    
+    let pid = app.processIdentifier
+    let appName = app.localizedName ?? "Unknown App"
+    print("\nApplication: \(appName) (PID: \(pid))\n")
+    
+    let appElement = AXUIElementCreateApplication(pid)
+    var visitedElements = Set<AXUIElement>()
+    traverseUI(element: appElement, visited: &visitedElements)
+}
