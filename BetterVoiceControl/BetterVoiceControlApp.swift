@@ -35,7 +35,6 @@ struct ContentView: View {
             Text("Voice-Controlled Mac App")
                 .font(.largeTitle)
                 .padding()
-            
             Text("Grant Microphone and Accessibility permissions to control the UI.")
                 .padding()
         }
@@ -47,8 +46,6 @@ class OpenAIRealtimeAPI {
     private var webSocketTask: URLSessionWebSocketTask?
     private let audioEngine = AVAudioEngine()
     private let dispatchQueue = DispatchQueue(label: "com.openai.realtimeapi")
-    
-    // Playback properties
     private let audioPlayer = AVAudioPlayerNode()
     
     func connect() {
@@ -68,69 +65,32 @@ class OpenAIRealtimeAPI {
         webSocketTask?.resume()
         
         print("Connected to OpenAI Realtime API.")
-        
-        // Send session update to enable transcription
-        let sessionUpdate: [String: Any] = [
-            "type": "session.update",
-            "session": [
-                "input_audio_transcription": [
-                    "model": "whisper-1"  // Enable real-time transcription with Whisper
-                ]
-            ]
-        ]
-        
-        do {
-            let sessionData = try JSONSerialization.data(withJSONObject: sessionUpdate, options: [])
-            webSocketTask?.send(.string(String(data: sessionData, encoding: .utf8)!)) { error in
-                if let error = error {
-                    print("Error sending session update: \(error)")
-                } else {
-                    print("Session updated with real-time transcription enabled.")
-                }
-            }
-        } catch {
-            print("Error serializing session update: \(error)")
-        }
-        
-        setupAudioEngine()  // Stream the audio to the API
+        setupAudioEngine()
     }
     
     func setupAudioEngine() {
-        // Attach the audio player node
         audioEngine.attach(audioPlayer)
-        
-        // Get the input and output nodes
         let inputNode = audioEngine.inputNode
-        
-        // Define the desired sample rate
         let sampleRate: Double = 24000.0
-        
-        // Create format for capturing audio (input) with forced sample rate
         let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true)!
         
-        // Install a tap on the input node to capture audio
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
             self.sendAudioChunk(buffer: buffer)
         }
         
-        // Create format for playback (output) with the same sample rate
         let playbackFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false)!
-        
-        // Connect the audio player node to the main mixer node with the forced sample rate
         audioEngine.connect(audioPlayer, to: audioEngine.mainMixerNode, format: playbackFormat)
-        
-        // Prepare and start the audio engine
         audioEngine.prepare()
         
         do {
             try audioEngine.start()
             print("Audio engine started.")
-            receiveAudioResponse()  // Handle the responses
+            receiveAudioResponse()
         } catch {
             print("Audio engine couldn't start: \(error)")
         }
     }
-
+    
     private func sendAudioChunk(buffer: AVAudioPCMBuffer) {
         guard let channelData = buffer.int16ChannelData?[0] else { return }
         let data = Data(bytes: channelData, count: Int(buffer.frameLength * buffer.format.streamDescription.pointee.mBytesPerFrame))
@@ -149,57 +109,43 @@ class OpenAIRealtimeAPI {
             }
         }
     }
-    var textDeltas: String = ""
-    var audioTranscriptDeltas: String = ""
-
+    
     func receiveAudioResponse() {
         webSocketTask?.receive { [self] result in
             switch result {
             case .failure(let error):
-                print("Error receiving audio response: \(error)")
+                fatalError("Error receiving audio response: \(error)")
             case .success(let message):
                 switch message {
                 case .string(let text):
-                    // Parse the JSON response
                     if let data = text.data(using: .utf8) {
                         do {
                             let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
-                            // Check for delta event types
                             if let eventType = json?["type"] as? String {
                                 switch eventType {
-                                case "conversation.item.input_audio_transcription.completed":
-                                    if let transcript = json?["transcript"] as? String {
-                                        print("Transcription: \(transcript)")
-                                        textDeltas += transcript  // Append or process the transcription as needed
-                                    }
-
                                 case "response.text.delta":
                                     if let delta = json?["delta"] as? String {
                                         print("Text Delta: \(delta)")
-                                        textDeltas += delta  // Append delta to textDeltas
                                     }
                                 case "response.audio_transcript.delta":
                                     if let delta = json?["delta"] as? String {
                                         print("Audio Transcript Delta: \(delta)")
-                                        audioTranscriptDeltas += delta  // Append delta to audioTranscriptDeltas
                                     }
                                 case "response.audio.delta":
                                     if let delta = json?["delta"] as? String {
-//                                        print("Audio Delta: \(delta)")
                                         playReceivedAudio(base64String: delta)
                                     }
                                 default:
                                     print("Unhandled event type: \(eventType)")
                                 }
                             }
+                            self.receiveAudioResponse()
                         } catch {
-                            print("Error parsing JSON: \(error)")
+                            fatalError("Error parsing JSON: \(error)")
                         }
                     }
-                    self.receiveAudioResponse()  // Continue receiving messages
                 case .data(let data):
                     print("Received data message of size: \(data.count) bytes.")
-                    self.receiveAudioResponse()
                 @unknown default:
                     fatalError("Unknown message type received.")
                 }
@@ -209,8 +155,7 @@ class OpenAIRealtimeAPI {
     
     func playReceivedAudio(base64String: String) {
         guard let audioBuffer = base64ToAudioBuffer(base64String: base64String) else {
-            print("Failed to create audio buffer.")
-            return
+            fatalError("Failed to create audio buffer.")
         }
         
         dispatchQueue.async {
@@ -219,7 +164,7 @@ class OpenAIRealtimeAPI {
                     try self.audioEngine.start()
                     print("Playback engine restarted.")
                 } catch {
-                    print("Playback engine couldn't start: \(error)")
+                    fatalError("Playback engine couldn't start: \(error)")
                 }
             }
             
@@ -233,26 +178,15 @@ class OpenAIRealtimeAPI {
             }
         }
     }
-    
-    func disconnect() {
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
-        print("Disconnected from OpenAI Realtime API.")
-    }
 }
 
-// Helper Functions
-
 func base64ToAudioBuffer(base64String: String, sampleRate: Double = 24000, channels: AVAudioChannelCount = 1) -> AVAudioPCMBuffer? {
-    // Step 1: Decode Base64 String
     guard let pcmData = Data(base64Encoded: base64String) else {
         print("Error decoding base64 string")
         return nil
     }
     
-    // Step 2: Convert PCM16 data to Float32
     let float32Data = pcm16ToFloat32(pcmData: pcmData)
-    
-    // Step 3: Create an AVAudioPCMBuffer with the Float32 data
     let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: channels, interleaved: false)!
     let frameCapacity = AVAudioFrameCount(float32Data.count)
     
@@ -262,8 +196,6 @@ func base64ToAudioBuffer(base64String: String, sampleRate: Double = 24000, chann
     }
     
     audioBuffer.frameLength = frameCapacity
-    
-    // Fill the buffer with the converted Float32 data
     for i in 0..<Int(audioBuffer.frameLength) {
         audioBuffer.floatChannelData?.pointee[i] = float32Data[i]
     }
