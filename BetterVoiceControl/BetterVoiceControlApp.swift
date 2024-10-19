@@ -49,12 +49,7 @@ class OpenAIRealtimeAPI {
     private let dispatchQueue = DispatchQueue(label: "com.openai.realtimeapi")
     
     // Playback properties
-    private let playbackEngine = AVAudioEngine()
     private let audioPlayer = AVAudioPlayerNode()
-    
-    init() {
-        setupPlaybackEngine()
-    }
     
     func connect() {
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
@@ -97,38 +92,40 @@ class OpenAIRealtimeAPI {
             print("Error serializing session update: \(error)")
         }
         
-        startStreamingAudio()  // Stream the audio to the API
-        receiveAudioResponse()  // Handle the responses
+        setupAudioEngine()  // Stream the audio to the API
     }
     
-    func setupPlaybackEngine() {
-        playbackEngine.attach(audioPlayer)
+    func setupAudioEngine() {
+        // Attach the audio player node
+        audioEngine.attach(audioPlayer)
         
-        // Define the audio format to match your buffer's format
-        let audioFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false)!
-        
-        // Connect the audio player to the main mixer node with the specified format
-        playbackEngine.connect(audioPlayer, to: playbackEngine.mainMixerNode, format: audioFormat)
-        
-        do {
-            try playbackEngine.start()
-            print("Playback engine started.")
-        } catch {
-            print("Playback engine couldn't start: \(error)")
-        }
-    }
-    
-    func startStreamingAudio() {
+        // Get the input and output nodes
         let inputNode = audioEngine.inputNode
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, time in
+        
+        // Define the desired sample rate
+        let sampleRate: Double = 24000.0
+        
+        // Create format for capturing audio (input) with forced sample rate
+        let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true)!
+        
+        // Install a tap on the input node to capture audio
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
             self.sendAudioChunk(buffer: buffer)
         }
         
+        // Create format for playback (output) with the same sample rate
+        let playbackFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false)!
+        
+        // Connect the audio player node to the main mixer node with the forced sample rate
+        audioEngine.connect(audioPlayer, to: audioEngine.mainMixerNode, format: playbackFormat)
+        
+        // Prepare and start the audio engine
         audioEngine.prepare()
         
         do {
             try audioEngine.start()
             print("Audio engine started.")
+            receiveAudioResponse()  // Handle the responses
         } catch {
             print("Audio engine couldn't start: \(error)")
         }
@@ -217,6 +214,15 @@ class OpenAIRealtimeAPI {
         }
         
         dispatchQueue.async {
+            if !self.audioEngine.isRunning {
+                do {
+                    try self.audioEngine.start()
+                    print("Playback engine restarted.")
+                } catch {
+                    print("Playback engine couldn't start: \(error)")
+                }
+            }
+            
             self.audioPlayer.scheduleBuffer(audioBuffer, at: nil, options: [], completionHandler: nil)
             
             if !self.audioPlayer.isPlaying {
@@ -271,6 +277,3 @@ func pcm16ToFloat32(pcmData: Data) -> [Float] {
         return (0..<count).map { Float(ptr[$0]) / 32768.0 }
     }
 }
-
-let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24000, channels: 1, interleaved: true)!
-
