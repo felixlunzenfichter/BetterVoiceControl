@@ -1,3 +1,46 @@
+/*
+ Better Voice Control - Application Instructions
+
+ Better Voice Control is a macOS application designed to empower users who are unable to use their hands,
+ such as paraplegics, to control their computer efficiently and productively using only their voice.
+ The application provides full control over the macOS operating system, leveraging the OpenAI Realtime API
+ via WebSocket. Users interact with the computer solely through voice commands, while the system provides
+ spoken feedback and guidance, ensuring an intuitive and responsive experience.
+
+ Key Principles:
+
+     1. Accessibility and Empowerment:
+         • This application aims to deliver an efficient and high-output computing experience for users
+           who rely solely on voice control. Our goal is to replicate, as closely as possible, the productivity
+           level that individuals achieve when using a mouse and keyboard.
+         • The application will use the macOS Accessibility API to identify and execute all available actions
+           that would typically require a mouse or keyboard.
+
+     2. Full Control:
+         • The application has comprehensive access to the macOS terminal and the Accessibility API. It can
+           execute any action that is possible through these interfaces, including accessibility actions,
+           keyboard shortcuts, and command-line operations.
+
+     3. Hands-Free Experience:
+         • Under no circumstances should the model ever suggest that the user performs any action themselves.
+           It is crucial that the user experience remains entirely hands-free. Any suggestion for manual input
+           would be inappropriate, offensive, and contradictory to the purpose of the application. The user
+           must always be empowered to accomplish tasks using their voice alone.
+
+     4. Clear Communication and Confirmation:
+         • The application must provide clear spoken feedback for every action it takes, explaining its behavior
+           in detail. For actions that could have irreversible consequences, such as deleting files or modifying
+           system settings, the application must seek confirmation from the user before proceeding.
+         • All instructions and feedback must be simple, concise, and easily understandable, ensuring that the
+           user remains fully informed and confident about each action the system performs.
+
+ By adhering to these principles, Better Voice Control ensures that users who cannot use their hands have a
+ reliable and efficient tool for interacting with their macOS system, empowering them to achieve high productivity
+ levels through voice control alone.
+
+ For context, we will append all of the program code so that you understand how you interact with the system.
+*/
+
 import SwiftUI
 import Cocoa
 import ApplicationServices
@@ -62,10 +105,35 @@ class OpenAIRealtimeAPI {
         request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
         
         webSocketTask = URLSession(configuration: .default).webSocketTask(with: request)
-        webSocketTask?.resume()
+        webSocketTask!.resume()
+        setCurrentFileAsInstructions()
         
         print("Connected to OpenAI Realtime API.")
         setupAudioEngine()
+    }
+    
+    func setCurrentFileAsInstructions() {
+        let currentFilePath = #file
+        guard let fileContent = try? String(contentsOfFile: currentFilePath, encoding: .utf8) else {
+            print("Failed to read the current file content.")
+            return
+        }
+        
+        let instructionPayload: [String: Any] = [
+            "type": "session.update",
+            "session": [
+                "instructions": fileContent
+            ]
+        ]
+        
+        if let jsonData = try? JSONSerialization.data(withJSONObject: instructionPayload),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            webSocketTask!.send(.string(jsonString)) { error in
+                if let error = error {
+                    fatalError("Error sending file as instructions: \(error)")
+                }
+            }
+        }
     }
     
     func setupAudioEngine() {
@@ -120,21 +188,26 @@ class OpenAIRealtimeAPI {
                 case .string(let text):
                     if let data = text.data(using: .utf8) {
                         do {
-                            let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
-                            if let eventType = json?["type"] as? String {
+                            guard let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+                                fatalError("Error: JSON is not of expected format.")
+                            }
+                            
+                            if let eventType = json["type"] as? String {
                                 switch eventType {
                                 case "response.text.delta":
-                                    if let delta = json?["delta"] as? String {
+                                    if let delta = json["delta"] as? String {
                                         print("Text Delta: \(delta)")
                                     }
                                 case "response.audio_transcript.delta":
-                                    if let delta = json?["delta"] as? String {
+                                    if let delta = json["delta"] as? String {
                                         print("Audio Transcript Delta: \(delta)")
                                     }
                                 case "response.audio.delta":
-                                    if let delta = json?["delta"] as? String {
+                                    if let delta = json["delta"] as? String {
                                         playReceivedAudio(base64String: delta)
                                     }
+                                case "error":
+                                    print("Error: \(json)")
                                 default:
                                     print("Unhandled event type: \(eventType)")
                                 }
@@ -173,8 +246,6 @@ class OpenAIRealtimeAPI {
             if !self.audioPlayer.isPlaying {
                 self.audioPlayer.play()
                 print("Audio playback started.")
-            } else {
-                print("Audio player is already playing.")
             }
         }
     }
