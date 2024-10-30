@@ -120,16 +120,36 @@ class OpenAIRealtimeAPI {
     }
     
     func setupAudioEngine() {
+         let inputNode = audioEngine.inputNode
+ //        let outputNode = audioEngine.outputNode
+         
+         let inputFormat = inputNode.inputFormat(forBus: 0)
+         print(inputFormat)
         audioEngine.attach(audioPlayer)
-        let inputNode = audioEngine.inputNode
-        let sampleRate: Double = 24000.0
-        let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true)!
+        let desiredSampleRate: Double = 24000.0
         
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
-            self.sendAudioChunk(buffer: buffer)
+        if inputFormat.sampleRate == desiredSampleRate {
+            let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: desiredSampleRate, channels: 1, interleaved: true)!
+            
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
+                self.sendAudioChunk(buffer: buffer)
+            }
+            
+        } else {
+            // Create a new format with the desired sample rate
+            guard let desiredFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: desiredSampleRate, channels: 1, interleaved: true) else {
+                print("Error creating desired format.")
+                return
+            }
+            
+            // Install a tap on the input node
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
+                self.convertAndSendAudio(buffer: buffer, inputFormat: inputFormat, outputFormat: desiredFormat)
+            }
+            
         }
+        let playbackFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: desiredSampleRate, channels: 1, interleaved: false)!
         
-        let playbackFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false)!
         audioEngine.connect(audioPlayer, to: audioEngine.mainMixerNode, format: playbackFormat)
         audioEngine.prepare()
         
@@ -139,6 +159,30 @@ class OpenAIRealtimeAPI {
             receiveResponse()
         } catch {
             print("Audio engine couldn't start: \(error)")
+        }
+    }
+    
+    func convertAndSendAudio(buffer: AVAudioPCMBuffer, inputFormat: AVAudioFormat, outputFormat: AVAudioFormat) {
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            print("Error creating audio converter.")
+            return
+        }
+        
+        let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(outputFormat.sampleRate * Double(buffer.frameLength) / inputFormat.sampleRate))!
+        
+        var error: NSError? = nil
+        let inputBlock: AVAudioConverterInputBlock = { inNumPackets, outStatus in
+            outStatus.pointee = .haveData
+            return buffer
+        }
+        
+        converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
+        
+        if let error = error {
+            print("Error during conversion: \(error)")
+        } else {
+            // Call your function to handle the converted buffer
+            self.sendAudioChunk(buffer: outputBuffer)
         }
     }
     
