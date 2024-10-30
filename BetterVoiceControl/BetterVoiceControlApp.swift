@@ -1,45 +1,5 @@
-/*
- Better Voice Control - Application Instructions
-
- Better Voice Control is a macOS application designed to empower users who are unable to use their hands,
- such as paraplegics, to control their computer efficiently and productively using only their voice.
- The application provides full control over the macOS operating system, leveraging the OpenAI Realtime API
- via WebSocket. Users interact with the computer solely through voice commands, while the system provides
- spoken feedback and guidance, ensuring an intuitive and responsive experience.
-
- Key Principles:
-
-     1. Accessibility and Empowerment:
-         • This application aims to deliver an efficient and high-output computing experience for users
-           who rely solely on voice control. Our goal is to replicate, as closely as possible, the productivity
-           level that individuals achieve when using a mouse and keyboard.
-         • The application will use the macOS Accessibility API to identify and execute all available actions
-           that would typically require a mouse or keyboard.
-
-     2. Full Control:
-         • The application has comprehensive access to the macOS terminal and the Accessibility API. It can
-           execute any action that is possible through these interfaces, including accessibility actions,
-           keyboard shortcuts, and command-line operations.
-
-     3. Hands-Free Experience:
-         • Under no circumstances should the model ever suggest that the user performs any action themselves.
-           It is crucial that the user experience remains entirely hands-free. Any suggestion for manual input
-           would be inappropriate, offensive, and contradictory to the purpose of the application. The user
-           must always be empowered to accomplish tasks using their voice alone.
-
-     4. Clear Communication and Confirmation:
-         • The application must provide clear spoken feedback for every action it takes, explaining its behavior
-           in detail. For actions that could have irreversible consequences, such as deleting files or modifying
-           system settings, the application must seek confirmation from the user before proceeding.
-         • All instructions and feedback must be simple, concise, and easily understandable, ensuring that the
-           user remains fully informed and confident about each action the system performs.
-
- By adhering to these principles, Better Voice Control ensures that users who cannot use their hands have a
- reliable and efficient tool for interacting with their macOS system, empowering them to achieve high productivity
- levels through voice control alone.
-
- For context, we will append all of the program code so that you understand how you interact with the system.
-*/
+let INSTRUCTIONS = """
+"""
 
 import SwiftUI
 import Cocoa
@@ -106,34 +66,57 @@ class OpenAIRealtimeAPI {
         
         webSocketTask = URLSession(configuration: .default).webSocketTask(with: request)
         webSocketTask!.resume()
-        setCurrentFileAsInstructions()
+        defineFunction()
+//        setInstructions()
         
         print("Connected to OpenAI Realtime API.")
         setupAudioEngine()
     }
     
-    func setCurrentFileAsInstructions() {
-        let currentFilePath = #file
-        guard let fileContent = try? String(contentsOfFile: currentFilePath, encoding: .utf8) else {
-            print("Failed to read the current file content.")
-            return
-        }
-        
-        let instructionPayload: [String: Any] = [
-            "type": "session.update",
-            "session": [
-                "instructions": fileContent
-            ]
-        ]
-        
-        if let jsonData = try? JSONSerialization.data(withJSONObject: instructionPayload),
+    func send(_ jsonObj: [String: Any]) {
+        if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj),
            let jsonString = String(data: jsonData, encoding: .utf8) {
             webSocketTask!.send(.string(jsonString)) { error in
                 if let error = error {
-                    fatalError("Error sending file as instructions: \(error)")
+                    fatalError("Error sending json: \(error)")
                 }
-            }
-        }
+            }}
+    }
+    
+    func setInstructions() {
+        send([
+            "type": "session.update",
+            "session": [
+                "instructions": INSTRUCTIONS
+            ]
+        ])
+    }
+    
+    func defineFunction() {
+        let functionPayload: [String: Any] = [
+            "type": "session.update",
+            "session": [
+                "tools": [
+                    [
+                        "type": "function",
+                        "name": "executeCommandOnTerminal",
+                        "description": "Executes a terminal command and returns the output.",
+                        "parameters": [
+                            "type": "object",
+                            "properties": [
+                                "command": [
+                                    "type": "string",
+                                    "description": "The terminal command to execute."
+                                ]
+                            ],
+                            "required": ["command"]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+        
+        send(functionPayload)
     }
     
     func setupAudioEngine() {
@@ -153,7 +136,7 @@ class OpenAIRealtimeAPI {
         do {
             try audioEngine.start()
             print("Audio engine started.")
-            receiveAudioResponse()
+            receiveResponse()
         } catch {
             print("Audio engine couldn't start: \(error)")
         }
@@ -178,7 +161,7 @@ class OpenAIRealtimeAPI {
         }
     }
     
-    func receiveAudioResponse() {
+    func receiveResponse() {
         webSocketTask?.receive { [self] result in
             switch result {
             case .failure(let error):
@@ -194,38 +177,93 @@ class OpenAIRealtimeAPI {
                             
                             if let eventType = json["type"] as? String {
                                 switch eventType {
-                                case "response.text.delta":
-                                    if let delta = json["delta"] as? String {
-                                        print("Text Delta: \(delta)")
+                                case "response.done":
+                                    break
+                                case "response.function_call_arguments.delta":
+                                    break
+                                case "response.function_call_arguments.done":
+                                    break
+                                case "response.output_item.done":
+                                    guard let item = json["item"] as? [String: Any] else { break }
+                                    
+                                    if let type = item["type"] as? String, type == "function_call",
+                                       let callID = item["call_id"] as? String,
+                                       let argumentsString = item["arguments"] as? String,
+                                       let argumentsData = argumentsString.data(using: .utf8),
+                                       let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
+                                       let command = argumentsDict["command"] as? String {
+                                        executeTerminalCommand(command, callID: callID)
+                                    } else if let contentArray = item["content"] as? [[String: Any]],
+                                       let content = contentArray.first,
+                                       let transcript = content["transcript"] as? String {
+                                        print("[[Model Text Output]] \(transcript)")
                                     }
                                 case "response.audio_transcript.delta":
-                                    if let delta = json["delta"] as? String {
-                                        print("Audio Transcript Delta: \(delta)")
-                                    }
+                                    break
                                 case "response.audio.delta":
                                     if let delta = json["delta"] as? String {
                                         playReceivedAudio(base64String: delta)
                                     }
+                                case "conversation.item.created":
+                                    break
                                 case "error":
                                     print("Error: \(json)")
                                 default:
                                     print("Unhandled event type: \(eventType)")
                                 }
                             }
-                            self.receiveAudioResponse()
+                            self.receiveResponse()
                         } catch {
                             fatalError("Error parsing JSON: \(error)")
                         }
                     }
                 case .data(let data):
                     print("Received data message of size: \(data.count) bytes.")
+                    self.receiveResponse()
                 @unknown default:
                     fatalError("Unknown message type received.")
                 }
             }
         }
     }
+
+    func executeTerminalCommand(_ command: String, callID: String) {
+        print("[[Executing Command]] \(command)")
+        
+        let process = Process()
+        process.launchPath = "/bin/bash"
+        process.arguments = ["-c", command]
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        
+        process.launch()
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        
+        if let output = String(data: data, encoding: .utf8) {
+            let result = "exit code: \(process.terminationStatus)\n" + "output: \(output)"
+            print("[[Command Output]] \(result)")
+            sendTerminalOutputToModel(callID: callID, output: result)
+        }
+    }
     
+    func sendTerminalOutputToModel(callID: String, output: String) {
+        let payload: [String: Any] = [
+            "type": "conversation.item.create",
+            "item": [
+                "type": "function_call_output",
+                "call_id": callID,
+                "output": output
+            ]
+        ]
+        
+        send(payload)
+        send(["type": "response.create"])
+    }
+
     func playReceivedAudio(base64String: String) {
         guard let audioBuffer = base64ToAudioBuffer(base64String: base64String) else {
             fatalError("Failed to create audio buffer.")
@@ -251,6 +289,7 @@ class OpenAIRealtimeAPI {
     }
 }
 
+/* Auxiliary Functions */
 func base64ToAudioBuffer(base64String: String, sampleRate: Double = 24000, channels: AVAudioChannelCount = 1) -> AVAudioPCMBuffer? {
     guard let pcmData = Data(base64Encoded: base64String) else {
         print("Error decoding base64 string")
