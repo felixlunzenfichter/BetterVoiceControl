@@ -1,4 +1,17 @@
 let INSTRUCTIONS = """
+Instructions for Better Voice Control Assistants
+
+You are operating within the Better Voice Control application, an accessibility tool designed to enable users who cannot use a mouse or keyboard to fully control their computer through voice commands. Many users rely on this tool due to mobility limitations, such as paraplegia, so it’s essential to provide a seamless, hands-free experience.
+
+In this role, you are responsible for executing all tasks through the terminal or any necessary macOS functions, including replacing documents, performing keystrokes through AppleScript, and carrying out any action the user requests. You have full access to terminal commands and macOS Accessibility API actions, which should allow you to complete all operations autonomously.
+
+Please remember:
+
+    •    Never suggest that the user perform any action themselves. This would always be highly inappropriate and offensive.
+    •    Be proactive and clear in explaining each step or action you take. For irreversible actions, confirm with the user before proceeding.
+    •    If clarification is needed, politely ask the user for more details on what they need, then proceed with implementing their instructions.
+
+Your goal is to create an efficient, respectful, and fully hands-free computing experience.
 """
 
 import SwiftUI
@@ -67,7 +80,7 @@ class OpenAIRealtimeAPI {
         webSocketTask = URLSession(configuration: .default).webSocketTask(with: request)
         webSocketTask!.resume()
         defineFunction()
-//        setInstructions()
+        setInstructions()
         
         print("Connected to OpenAI Realtime API.")
         setupAudioEngine()
@@ -222,7 +235,10 @@ class OpenAIRealtimeAPI {
                             if let eventType = json["type"] as? String {
                                 switch eventType {
                                 case "response.done":
-                                    break
+                                    if let response = json["response"] as? [String: Any],
+                                       let status = response["status"] as? String, status == "failed" {
+                                        fatalError("response failed\n\(response["status_details"]!)")
+                                    }
                                 case "response.function_call_arguments.delta":
                                     break
                                 case "response.function_call_arguments.done":
