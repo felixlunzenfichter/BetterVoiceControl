@@ -243,6 +243,9 @@ class OpenAIRealtimeAPI {
                                     break
                                 case "response.function_call_arguments.done":
                                     break
+                                case "input_audio_buffer.speech_started":
+                                    print("User started speaking.")
+                                    stopAudioPlayback()
                                 case "response.output_item.done":
                                     guard let item = json["item"] as? [String: Any] else { break }
                                     
@@ -323,6 +326,15 @@ class OpenAIRealtimeAPI {
         send(payload)
         send(["type": "response.create"])
     }
+    
+    func stopAudioPlayback() {
+    dispatchQueue.async {
+        if self.audioPlayer.isPlaying {
+            self.audioPlayer.stop()
+            print("Audio playback stopped and buffers cleared.")
+        }
+    }
+}
 
     func playReceivedAudio(base64String: String) {
         guard let audioBuffer = base64ToAudioBuffer(base64String: base64String) else {
