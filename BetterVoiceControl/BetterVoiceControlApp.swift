@@ -325,7 +325,7 @@ class OpenAIRealtimeAPI {
         ]
         
         send(payload)
-        send(["type": "response.create"])
+//        send(["type": "response.create"])
     }
     
     func stopAudioPlayback() {
