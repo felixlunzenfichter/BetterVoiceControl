@@ -105,20 +105,21 @@ class OpenAIRealtimeAPI {
     }
     
     func defineFunction() {
-        let functionPayload: [String: Any] = [
-            "type": "session.update",
-            "session": [
-                "tools": [
-                    [
-                        "type": "function",
-                        "name": "executeCommandOnTerminal",
-                        "description": "Executes a terminal command and returns the output.",
-                        "parameters": [
-                            "type": "object",
-                            "properties": [
-                                "command": [
-                                    "type": "string",
-                                    "description": "The terminal command to execute."
+    let functionPayload: [String: Any] = [
+        "type": "session.update",
+        "session": [
+            "max_response_output_tokens": 10, // Set the maximum token limit to 10 for testing
+            "tools": [
+                [
+                    "type": "function",
+                    "name": "executeCommandOnTerminal",
+                    "description": "Executes a terminal command and returns the output.",
+                    "parameters": [
+                        "type": "object",
+                        "properties": [
+                            "command": [
+                                "type": "string",
+                                "description": "The terminal command to execute."
                                 ]
                             ],
                             "required": ["command"]
@@ -127,9 +128,10 @@ class OpenAIRealtimeAPI {
                 ]
             ]
         ]
-        
-        send(functionPayload)
-    }
+    ]
+    
+    send(functionPayload)
+}
     
     func setupAudioEngine() {
          let inputNode = audioEngine.inputNode
