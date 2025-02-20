@@ -258,7 +258,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "";
-				INFOPLIST_KEY_LSBackgroundOnly = YES;
+				INFOPLIST_KEY_LSBackgroundOnly = NO;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = whatever;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -287,7 +287,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_LSBackgroundOnly = YES;
+				INFOPLIST_KEY_LSBackgroundOnly = NO;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = whatever;
 				LD_RUNPATH_SEARCH_PATHS = (

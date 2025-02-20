@@ -1,17 +1,4 @@
-let INSTRUCTIONS = """
-Instructions for Better Voice Control Assistants
-
-You are operating within the Better Voice Control application, an accessibility tool designed for users who cannot use a mouse or keyboard and rely on hands-free operation.
-
-In this role, you will execute all tasks through terminal commands or macOS functions, including document management and AppleScript actions. You have full access to the macOS Accessibility API and terminal, allowing you to handle all requests independently.
-
-Please remember:
-
-	•	Never suggest that the user perform any action themselves. This would always be highly inappropriate and offensive.
-	•	Speech output is limited to a maximum length of one sentence.
-	•	If additional information is needed that is longer than a sentence, provide it through text output. Be aware that all terminal commands, function calls, and their outputs can be seen by the user and do not need to be repeated through voice. Voice is extremely costly, so anything beyond one sentence must be communicated via text for the user to read. This ensures a quick experience, delivering concise answers without delay.
-Your goal is to ensure a respectful, efficient, and fully hands-free experience.
-"""
+let INSTRUCTIONS = "Your task is to provide a zero-touch interface for browser usage by converting user instructions into prompts that can be executed by a browser agent. Transform natural language instructions into succinct, optimal commands. For direct execution, refine the prompt with no additional commentary."
 
 import SwiftUI
 import Cocoa
@@ -20,50 +7,82 @@ import AVFoundation
 
 @main
 struct VoiceControlledMacApp: App {
-    let api = OpenAIRealtimeAPI()
-    
-    init() {
-        requestMicrophonePermissions()
-        api.connect()
-    }
-    
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
     }
-    
-    func requestMicrophonePermissions() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            if granted {
-                print("Microphone permissions granted!")
-            } else {
-                print("Microphone permissions not granted.")
-            }
-        }
-    }
 }
 
 struct ContentView: View {
+    @StateObject var viewModel = ViewModel()
+    
     var body: some View {
-        VStack {
-            Text("Voice-Controlled Mac App")
-                .font(.largeTitle)
-                .padding()
-            Text("Grant Microphone and Accessibility permissions to control the UI.")
-                .padding()
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Text("Listening:")
+                Spacer()
+                Text(viewModel.isListening ? "Yes" : "No")
+                    .foregroundColor(viewModel.isListening ? .green : .red)
+            }
+            
+            HStack {
+                Text("Executing:")
+                Spacer()
+                Text(viewModel.isExecuting ? "Yes" : "No")
+                    .foregroundColor(viewModel.isExecuting ? .green : .red)
+            }
+            
+            Text("Current Prompt:")
+                .font(.headline)
+            
+            ZStack {
+                Text(viewModel.prompt)
+                    .padding()
+                    .id(viewModel.prompt)
+                    .transition(.opacity)
+            }
+            .animation(.easeInOut, value: viewModel.prompt)
+            
+            Button(action: viewModel.startListening) {
+                Text("Start Listening")
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+            }
+            
+            ScrollView {
+                ForEach(viewModel.modelResponses.reversed(), id: \.self) { response in
+                    Text(response)
+                }
+            }
+            
+            Spacer()
         }
-        .frame(width: 400, height: 300)
+        .padding()
     }
 }
 
-class OpenAIRealtimeAPI {
+class ViewModel: ObservableObject {
+    @Published var modelResponses: [String] = []
+    @Published var prompt: String = "Initial prompt text."
+    @Published var isListening: Bool = false
+    @Published var isExecuting: Bool = false
+
+    func startListening() {
+        // Implementation goes here.
+    }
+
     private var webSocketTask: URLSessionWebSocketTask?
     private let audioEngine = AVAudioEngine()
     private let dispatchQueue = DispatchQueue(label: "com.openai.realtimeapi")
     private let audioPlayer = AVAudioPlayerNode()
     
-    func connect() {
+    init() {
+        requestMicrophonePermissions()
+
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
         let urlString = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01"
         
@@ -85,6 +104,16 @@ class OpenAIRealtimeAPI {
         setupAudioEngine()
     }
     
+    func requestMicrophonePermissions() {
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            if granted {
+                print("Microphone permissions granted!")
+            } else {
+                print("Microphone permissions not granted.")
+            }
+        }
+    }
+    
     func send(_ jsonObj: [String: Any]) {
         if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj),
            let jsonString = String(data: jsonData, encoding: .utf8) {
@@ -99,39 +128,67 @@ class OpenAIRealtimeAPI {
         send([
             "type": "session.update",
             "session": [
-                "instructions": INSTRUCTIONS
+                "modalities": ["text"],
+                "instructions": INSTRUCTIONS,
             ]
         ])
     }
     
     func defineFunction() {
-    let functionPayload: [String: Any] = [
-        "type": "session.update",
-        "session": [
-            "max_response_output_tokens": 10, // Set the maximum token limit to 10 for testing
-            "tools": [
-                [
-                    "type": "function",
-                    "name": "executeCommandOnTerminal",
-                    "description": "Executes a terminal command and returns the output.",
-                    "parameters": [
-                        "type": "object",
-                        "properties": [
-                            "command": [
-                                "type": "string",
-                                "description": "The terminal command to execute."
+        let functionPayload: [String: Any] = [
+            "type": "session.update",
+            "session": [
+                "tools": [
+                    [
+                        "type": "function",
+                        "name": "updatePrompt",
+                        "description": "Updates the prompt text based on user input.",
+                        "parameters": [
+                            "type": "object",
+                            "properties": [
+                                "prompt": [
+                                    "type": "string",
+                                    "description": "The new prompt text."
                                 ]
                             ],
-                            "required": ["command"]
+                            "required": ["prompt"]
+                        ]
+                    ],
+                    [
+                        "type": "function",
+                        "name": "sendPrompt",
+                        "description": "Sends the current prompt to the browser operator to execute the task.",
+                        "parameters": [
+                            "type": "object",
+                            "properties": [:],
+                            "required": []
+                        ]
+                    ],
+                    [
+                        "type": "function",
+                        "name": "stopTask",
+                        "description": "Stops the currently executing task.",
+                        "parameters": [
+                            "type": "object",
+                            "properties": [:],
+                            "required": []
+                        ]
+                    ],
+                    [
+                        "type": "function",
+                        "name": "stopListening",
+                        "description": "Stops listening to the user.",
+                        "parameters": [
+                            "type": "object",
+                            "properties": [:],
+                            "required": []
                         ]
                     ]
                 ]
             ]
         ]
-    ]
-    
-    send(functionPayload)
-}
+        send(functionPayload)
+    }
     
     func setupAudioEngine() {
          let inputNode = audioEngine.inputNode
@@ -232,7 +289,6 @@ class OpenAIRealtimeAPI {
                             guard let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
                                 fatalError("Error: JSON is not of expected format.")
                             }
-                            
                             if let eventType = json["type"] as? String {
                                 switch eventType {
                                 case "response.done":
@@ -249,18 +305,40 @@ class OpenAIRealtimeAPI {
                                     stopAudioPlayback()
                                 case "response.output_item.done":
                                     guard let item = json["item"] as? [String: Any] else { break }
-                                    
                                     if let type = item["type"] as? String, type == "function_call",
                                        let callID = item["call_id"] as? String,
+                                       let name = item["name"] as? String,
                                        let argumentsString = item["arguments"] as? String,
                                        let argumentsData = argumentsString.data(using: .utf8),
-                                       let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
-                                       let command = argumentsDict["command"] as? String {
-                                        executeTerminalCommand(command, callID: callID)
+                                       let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any] {
+                                        switch name {
+                                        case "updatePrompt":
+                                            if let prompt = argumentsDict["prompt"] as? String {
+                                                DispatchQueue.main.async {
+                                                    self.prompt = prompt
+                                                }
+                                            }
+                                        case "sendPrompt":
+                                            DispatchQueue.main.async {
+                                                self.isExecuting = true
+                                            }
+                                        case "stopTask":
+                                            DispatchQueue.main.async {
+                                                self.isExecuting = false
+                                                self.prompt = "Task stopped."
+                                            }
+                                        case "stopListening":
+                                            DispatchQueue.main.async {
+                                                self.isListening = false
+                                                self.prompt = "Stopped listening."
+                                            }
+                                        default:
+                                            print("Unhandled function: \(name)")
+                                        }
                                     } else if let contentArray = item["content"] as? [[String: Any]],
-                                       let content = contentArray.first,
-                                       let transcript = content["transcript"] as? String {
-                                        print("[[Model Text Output]] \(transcript)")
+                                              let content = contentArray.first,
+                                              let transcript = content["transcript"] as? String {
+                                        print("[[Model Audio Transcript]] \(transcript)")
                                     }
                                 case "response.audio_transcript.delta":
                                     break
@@ -270,20 +348,29 @@ class OpenAIRealtimeAPI {
                                     }
                                 case "conversation.item.created":
                                     break
+                                case "response.text.delta":
+                                    break
+                                case "response.text.done":
+                                    if let text = json["text"] as? String {
+                                        print("[[Model Text Output]] \(text)")
+                                        DispatchQueue.main.async {
+                                            self.modelResponses.append(text)
+                                        }
+                                    }
                                 case "error":
                                     print("Error: \(json)")
                                 default:
                                     print("Unhandled event type: \(eventType)")
                                 }
                             }
-                            self.receiveResponse()
+                            receiveResponse()
                         } catch {
                             fatalError("Error parsing JSON: \(error)")
                         }
                     }
                 case .data(let data):
                     print("Received data message of size: \(data.count) bytes.")
-                    self.receiveResponse()
+                    receiveResponse()
                 @unknown default:
                     fatalError("Unknown message type received.")
                 }
