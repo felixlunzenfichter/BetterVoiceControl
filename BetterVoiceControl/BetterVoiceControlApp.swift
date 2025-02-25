@@ -3,33 +3,80 @@ Instructions for Better Voice Control Assistants
 
 You are operating within the Better Voice Control application, an accessibility tool designed for users who cannot use a mouse or keyboard and rely on hands-free operation.
 
-In this role, you will execute all tasks through terminal commands or macOS functions, including document management and AppleScript actions. You have full access to the macOS Accessibility API and terminal, allowing you to handle all requests independently.
+In this role, you will execute all tasks through terminal commands via the Claude CLI or macOS functions. You are interacting with Claude in the terminal, which is a more intelligent way to interact with the system. Claude has extensive capabilities to help with files, code, and terminal operations.
+
+Important information about the environment:
+- You are communicating with the Claude CLI in the terminal
+- Claude can perform complex tasks through the terminal
+- Use Claude's capabilities to handle file operations, coding tasks, and system interactions
+- You can send commands to Claude to execute terminal operations
 
 Please remember:
 
 	•	Never suggest that the user perform any action themselves. This would always be highly inappropriate and offensive.
 	•	Speech output is limited to a maximum length of one sentence.
 	•	If additional information is needed that is longer than a sentence, provide it through text output. Be aware that all terminal commands, function calls, and their outputs can be seen by the user and do not need to be repeated through voice. Voice is extremely costly, so anything beyond one sentence must be communicated via text for the user to read. This ensures a quick experience, delivering concise answers without delay.
-Your goal is to ensure a respectful, efficient, and fully hands-free experience.
+
+Your goal is to ensure a respectful, efficient, and fully hands-free experience by leveraging Claude's capabilities in the terminal.
 """
 
 import SwiftUI
 import Cocoa
 import ApplicationServices
 import AVFoundation
+import Foundation
+
+class AppState: ObservableObject {
+    @Published var transcript: String = ""
+    @Published var commandHistory: [CommandEntry] = []
+    @Published var isRecording: Bool = false
+    @Published var modelOutputText: String = ""
+    
+    func addCommand(_ command: String, output: String) {
+        DispatchQueue.main.async {
+            let entry = CommandEntry(command: command, output: output, timestamp: Date())
+            self.commandHistory.append(entry)
+        }
+    }
+    
+    func updateModelOutput(_ text: String) {
+        DispatchQueue.main.async {
+            self.modelOutputText = text
+        }
+    }
+}
+
+struct CommandEntry: Identifiable {
+    let id = UUID()
+    let command: String
+    let output: String
+    let timestamp: Date
+}
 
 @main
 struct VoiceControlledMacApp: App {
-    let api = OpenAIRealtimeAPI()
+    @StateObject private var appState = AppState()
+    let api: OpenAIRealtimeAPI
     
     init() {
+        let appState = AppState()
+        self._appState = StateObject(wrappedValue: appState)
+        self.api = OpenAIRealtimeAPI(appState: appState)
+        
         requestMicrophonePermissions()
-        api.connect()
     }
     
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(appState)
+                .onAppear {
+                    api.connect()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        api.startClaudeTerminal()
+                    }
+                }
+                .frame(minWidth: 800, minHeight: 600)
         }
     }
     
@@ -45,15 +92,153 @@ struct VoiceControlledMacApp: App {
 }
 
 struct ContentView: View {
+    @EnvironmentObject var appState: AppState
+    
     var body: some View {
-        VStack {
-            Text("Voice-Controlled Mac App")
-                .font(.largeTitle)
-                .padding()
-            Text("Grant Microphone and Accessibility permissions to control the UI.")
-                .padding()
+        VStack(spacing: 0) {
+            HeaderView()
+            
+            HStack(spacing: 0) {
+                // Left panel: Command History
+                TerminalHistoryView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                
+                Divider()
+                
+                // Right panel: Model Output
+                ModelOutputView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            
+            StatusBar()
         }
-        .frame(width: 400, height: 300)
+    }
+}
+
+struct HeaderView: View {
+    @EnvironmentObject var appState: AppState
+    
+    var body: some View {
+        HStack {
+            Text("Better Voice Control")
+                .font(.title)
+                .fontWeight(.bold)
+            
+            Spacer()
+            
+            HStack {
+                Circle()
+                    .fill(appState.isRecording ? Color.red : Color.gray)
+                    .frame(width: 12, height: 12)
+                Text(appState.isRecording ? "Listening..." : "Idle")
+                    .font(.caption)
+            }
+            .padding(.horizontal)
+        }
+        .padding()
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+}
+
+struct TerminalHistoryView: View {
+    @EnvironmentObject var appState: AppState
+    
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text("Terminal History")
+                .font(.headline)
+                .padding(.bottom, 5)
+            
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(appState.commandHistory) { entry in
+                        CommandView(entry: entry)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+        .padding()
+        .background(Color(.textBackgroundColor).opacity(0.5))
+    }
+}
+
+struct CommandView: View {
+    let entry: CommandEntry
+    @State private var isExpanded = true
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Button(action: { isExpanded.toggle() }) {
+                HStack {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    Text("$ \(entry.command)")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(.primary)
+                    Spacer()
+                    Text(formattedTime)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            if isExpanded {
+                Text(entry.output)
+                    .font(.system(.callout, design: .monospaced))
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.textBackgroundColor))
+                    .cornerRadius(4)
+            }
+        }
+        .padding(.vertical, 5)
+    }
+    
+    private var formattedTime: String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter.string(from: entry.timestamp)
+    }
+}
+
+struct ModelOutputView: View {
+    @EnvironmentObject var appState: AppState
+    
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text("Model Output")
+                .font(.headline)
+                .padding(.bottom, 5)
+            
+            ScrollView {
+                Text(appState.modelOutputText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .background(Color(.textBackgroundColor).opacity(0.3))
+            .cornerRadius(4)
+        }
+        .padding()
+    }
+}
+
+struct StatusBar: View {
+    @EnvironmentObject var appState: AppState
+    
+    var body: some View {
+        HStack {
+            Text("Speech: \(appState.transcript)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 5)
+        .background(Color(NSColor.windowBackgroundColor))
     }
 }
 
@@ -62,6 +247,14 @@ class OpenAIRealtimeAPI {
     private let audioEngine = AVAudioEngine()
     private let dispatchQueue = DispatchQueue(label: "com.openai.realtimeapi")
     private let audioPlayer = AVAudioPlayerNode()
+    private var persistentTerminalProcess: Process?
+    private var terminalPipe: Pipe?
+    private var appState: AppState
+    private var terminalOutputQueue: [String] = []
+    
+    init(appState: AppState) {
+        self.appState = appState
+    }
     
     func connect() {
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
@@ -85,14 +278,23 @@ class OpenAIRealtimeAPI {
         setupAudioEngine()
     }
     
+    func startClaudeTerminal() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Start Claude CLI in interactive mode
+            self.executeTerminalCommand("/opt/homebrew/bin/claude", callID: "claude-terminal")
+        }
+    }
+    
     func send(_ jsonObj: [String: Any]) {
         if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj),
            let jsonString = String(data: jsonData, encoding: .utf8) {
             webSocketTask!.send(.string(jsonString)) { error in
                 if let error = error {
-                    fatalError("Error sending json: \(error)")
+                    print("Error sending json: \(error)")
+                    return
                 }
-            }}
+            }
+        }
     }
     
     func setInstructions() {
@@ -105,39 +307,38 @@ class OpenAIRealtimeAPI {
     }
     
     func defineFunction() {
-    let functionPayload: [String: Any] = [
-        "type": "session.update",
-        "session": [
-            "max_response_output_tokens": 10, // Set the maximum token limit to 10 for testing
-            "tools": [
-                [
-                    "type": "function",
-                    "name": "executeCommandOnTerminal",
-                    "description": "Executes a terminal command and returns the output.",
-                    "parameters": [
-                        "type": "object",
-                        "properties": [
-                            "command": [
-                                "type": "string",
-                                "description": "The terminal command to execute."
-                                ]
-                            ],
-                            "required": ["command"]
+        let functionPayload: [String: Any] = [
+            "type": "session.update",
+            "session": [
+                "tools": [
+                    [
+                        "type": "function",
+                        "name": "executeCommandOnTerminal",
+                        "description": "Executes a terminal command and returns the output.",
+                        "parameters": [
+                            "type": "object",
+                            "properties": [
+                                "command": [
+                                    "type": "string",
+                                    "description": "The terminal command to execute."
+                                    ]
+                                ],
+                                "required": ["command"]
+                            ]
                         ]
                     ]
                 ]
             ]
-        ]
-    
-    send(functionPayload)
-}
+        
+        send(functionPayload)
+    }
     
     func setupAudioEngine() {
-         let inputNode = audioEngine.inputNode
- //        let outputNode = audioEngine.outputNode
-         
-         let inputFormat = inputNode.inputFormat(forBus: 0)
-         print(inputFormat)
+        let inputNode = audioEngine.inputNode
+//        let outputNode = audioEngine.outputNode
+        
+        let inputFormat = inputNode.inputFormat(forBus: 0)
+        print(inputFormat)
         audioEngine.attach(audioPlayer)
         let desiredSampleRate: Double = 24000.0
         
@@ -211,6 +412,10 @@ class OpenAIRealtimeAPI {
         }
         """
         
+        DispatchQueue.main.async {
+            self.appState.isRecording = true
+        }
+        
         webSocketTask?.send(.string(message)) { error in
             if let error = error {
                 print("Error sending audio chunk: \(error)")
@@ -222,30 +427,46 @@ class OpenAIRealtimeAPI {
         webSocketTask?.receive { [self] result in
             switch result {
             case .failure(let error):
-                fatalError("Error receiving audio response: \(error)")
+                print("Error receiving audio response: \(error)")
+                // Try to reconnect or inform user
+                DispatchQueue.main.async {
+                    self.appState.isRecording = false
+                }
             case .success(let message):
                 switch message {
                 case .string(let text):
                     if let data = text.data(using: .utf8) {
                         do {
                             guard let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
-                                fatalError("Error: JSON is not of expected format.")
+                                print("Error: JSON is not of expected format.")
+                                self.receiveResponse()
+                                return
                             }
                             
                             if let eventType = json["type"] as? String {
                                 switch eventType {
                                 case "response.done":
+                                    DispatchQueue.main.async {
+                                        self.appState.isRecording = false
+                                    }
                                     if let response = json["response"] as? [String: Any],
                                        let status = response["status"] as? String, status == "failed" {
-                                        fatalError("response failed\n\(response["status_details"]!)")
+                                        print("Response failed: \(response["status_details"] ?? "Unknown error")")
                                     }
                                 case "response.function_call_arguments.delta":
-                                    break
+                                    if let delta = json["delta"] as? String {
+                                        // Update UI with function call delta
+                                    }
                                 case "response.function_call_arguments.done":
                                     break
                                 case "input_audio_buffer.speech_started":
                                     print("User started speaking.")
+                                    DispatchQueue.main.async {
+                                        self.appState.isRecording = true
+                                    }
                                     stopAudioPlayback()
+                                case "input_audio_buffer.speech_ended":
+                                    print("User stopped speaking.")
                                 case "response.output_item.done":
                                     guard let item = json["item"] as? [String: Any] else { break }
                                     
@@ -257,12 +478,17 @@ class OpenAIRealtimeAPI {
                                        let command = argumentsDict["command"] as? String {
                                         executeTerminalCommand(command, callID: callID)
                                     } else if let contentArray = item["content"] as? [[String: Any]],
-                                       let content = contentArray.first,
-                                       let transcript = content["transcript"] as? String {
+                                              let content = contentArray.first,
+                                              let transcript = content["transcript"] as? String {
                                         print("[[Model Text Output]] \(transcript)")
+                                        self.appState.updateModelOutput(transcript)
                                     }
                                 case "response.audio_transcript.delta":
-                                    break
+                                    if let delta = json["delta"] as? String {
+                                        DispatchQueue.main.async {
+                                            self.appState.transcript += delta
+                                        }
+                                    }
                                 case "response.audio.delta":
                                     if let delta = json["delta"] as? String {
                                         playReceivedAudio(base64String: delta)
@@ -277,14 +503,16 @@ class OpenAIRealtimeAPI {
                             }
                             self.receiveResponse()
                         } catch {
-                            fatalError("Error parsing JSON: \(error)")
+                            print("Error parsing JSON: \(error)")
+                            self.receiveResponse()
                         }
                     }
                 case .data(let data):
                     print("Received data message of size: \(data.count) bytes.")
                     self.receiveResponse()
                 @unknown default:
-                    fatalError("Unknown message type received.")
+                    print("Unknown message type received.")
+                    self.receiveResponse()
                 }
             }
         }
@@ -296,6 +524,12 @@ class OpenAIRealtimeAPI {
         let process = Process()
         process.launchPath = "/bin/bash"
         process.arguments = ["-c", command]
+        
+        // Set the proper environment variables to ensure binaries like node can be found
+        var env = ProcessInfo.processInfo.environment
+        let path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = path
+        process.environment = env
         
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -309,6 +543,10 @@ class OpenAIRealtimeAPI {
         if let output = String(data: data, encoding: .utf8) {
             let result = "exit code: \(process.terminationStatus)\n" + "output: \(output)"
             print("[[Command Output]] \(result)")
+            
+            // Update the UI with command and output
+            self.appState.addCommand(command, output: output)
+            
             sendTerminalOutputToModel(callID: callID, output: result)
         }
     }
@@ -324,21 +562,22 @@ class OpenAIRealtimeAPI {
         ]
         
         send(payload)
-//        send(["type": "response.create"])
+        send(["type": "response.create"])
     }
     
     func stopAudioPlayback() {
-    dispatchQueue.async {
-        if self.audioPlayer.isPlaying {
-            self.audioPlayer.stop()
-            print("Audio playback stopped and buffers cleared.")
+        dispatchQueue.async {
+            if self.audioPlayer.isPlaying {
+                self.audioPlayer.stop()
+                print("Audio playback stopped and buffers cleared.")
+            }
         }
     }
-}
 
     func playReceivedAudio(base64String: String) {
         guard let audioBuffer = base64ToAudioBuffer(base64String: base64String) else {
-            fatalError("Failed to create audio buffer.")
+            print("Failed to create audio buffer.")
+            return
         }
         
         dispatchQueue.async {
@@ -347,7 +586,8 @@ class OpenAIRealtimeAPI {
                     try self.audioEngine.start()
                     print("Playback engine restarted.")
                 } catch {
-                    fatalError("Playback engine couldn't start: \(error)")
+                    print("Playback engine couldn't start: \(error)")
+                    return
                 }
             }
             
