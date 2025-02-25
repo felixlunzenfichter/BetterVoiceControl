@@ -128,7 +128,6 @@ class OpenAIRealtimeAPI {
                 ]
             ]
         ]
-    ]
     
     send(functionPayload)
 }
@@ -387,7 +386,8 @@ func base64ToAudioBuffer(base64String: String, sampleRate: Double = 24000, chann
 }
 
 func pcm16ToFloat32(pcmData: Data) -> [Float] {
-    return pcmData.withUnsafeBytes { (ptr: UnsafePointer<Int16>) in
+    return pcmData.withUnsafeBytes { rawBuffer -> [Float] in
+        let ptr = rawBuffer.baseAddress!.assumingMemoryBound(to: Int16.self)
         let count = pcmData.count / MemoryLayout<Int16>.size
         return (0..<count).map { Float(ptr[$0]) / 32768.0 }
     }
