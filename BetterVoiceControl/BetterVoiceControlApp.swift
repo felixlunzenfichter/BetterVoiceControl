@@ -10,29 +10,35 @@ import Foundation
 
 class AppState: ObservableObject {
     @Published var transcript: String = ""
-    @Published var commandHistory: [CommandEntry] = []
     @Published var isRecording: Bool = false
     @Published var modelOutputText: String = ""
-    
-    func addCommand(_ command: String, output: String) {
-        DispatchQueue.main.async {
-            let entry = CommandEntry(command: command, output: output, timestamp: Date())
-            self.commandHistory.append(entry)
-        }
-    }
+    @Published var currentPrompt: String = ""
+    @Published var promptStatus: String = "Ready"
+    @Published var claudeResponse: String = ""
     
     func updateModelOutput(_ text: String) {
         DispatchQueue.main.async {
             self.modelOutputText = text
         }
     }
-}
-
-struct CommandEntry: Identifiable {
-    let id = UUID()
-    let command: String
-    let output: String
-    let timestamp: Date
+    
+    func updateCurrentPrompt(_ prompt: String) {
+        DispatchQueue.main.async {
+            self.currentPrompt = prompt
+        }
+    }
+    
+    func updatePromptStatus(_ status: String) {
+        DispatchQueue.main.async {
+            self.promptStatus = status
+        }
+    }
+    
+    func updateClaudeResponse(_ response: String) {
+        DispatchQueue.main.async {
+            self.claudeResponse = response
+        }
+    }
 }
 
 @main
@@ -54,12 +60,17 @@ struct VoiceControlledMacApp: App {
                 .environmentObject(appState)
                 .onAppear {
                     api.connect()
+                    // Initialize with a welcome message
+                    appState.updateCurrentPrompt("Ready to receive voice input...")
+                    appState.updatePromptStatus("Listening for commands")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                         api.startClaudeTerminal()
                     }
                 }
-                .frame(minWidth: 800, minHeight: 600)
+                .frame(width: 700, height: 500)
+                .fixedSize()
         }
+        .windowStyle(HiddenTitleBarWindowStyle())
     }
     
     func requestMicrophonePermissions() {
@@ -77,150 +88,68 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     
     var body: some View {
-        VStack(spacing: 0) {
-            HeaderView()
-            
-            HStack(spacing: 0) {
-                // Left panel: Command History
-                TerminalHistoryView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
-                Divider()
-                
-                // Right panel: Model Output
-                ModelOutputView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            
-            StatusBar()
-        }
-    }
-}
-
-struct HeaderView: View {
-    @EnvironmentObject var appState: AppState
-    
-    var body: some View {
-        HStack {
-            Text("Better Voice Control")
-                .font(.title)
-                .fontWeight(.bold)
-            
-            Spacer()
-            
+        VStack(spacing: 12) {
+            // Status indicator
             HStack {
                 Circle()
                     .fill(appState.isRecording ? Color.red : Color.gray)
                     .frame(width: 12, height: 12)
                 Text(appState.isRecording ? "Listening..." : "Idle")
-                    .font(.caption)
+                    .font(.headline)
+                Spacer()
+                Text("Status: \(appState.promptStatus)")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
             }
-            .padding(.horizontal)
-        }
-        .padding()
-        .background(Color(NSColor.windowBackgroundColor))
-    }
-}
-
-struct TerminalHistoryView: View {
-    @EnvironmentObject var appState: AppState
-    
-    var body: some View {
-        VStack(alignment: .leading) {
-            Text("Terminal History")
-                .font(.headline)
-                .padding(.bottom, 5)
+            .padding(.top, 8)
             
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(appState.commandHistory) { entry in
-                        CommandView(entry: entry)
-                    }
-                }
-                .padding(.horizontal)
-            }
-        }
-        .padding()
-        .background(Color(.textBackgroundColor).opacity(0.5))
-    }
-}
-
-struct CommandView: View {
-    let entry: CommandEntry
-    @State private var isExpanded = true
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Button(action: { isExpanded.toggle() }) {
-                HStack {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    Text("$ \(entry.command)")
+            // Current prompt display
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Current Prompt:")
+                    .font(.headline)
+                
+                ScrollView {
+                    Text(appState.currentPrompt)
                         .font(.system(.body, design: .monospaced))
-                        .foregroundColor(.primary)
-                    Spacer()
-                    Text(formattedTime)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .background(Color(.textBackgroundColor).opacity(0.3))
+                .cornerRadius(8)
+                .frame(height: 120)
             }
-            .buttonStyle(PlainButtonStyle())
             
-            if isExpanded {
-                Text(entry.output)
-                    .font(.system(.callout, design: .monospaced))
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.textBackgroundColor))
-                    .cornerRadius(4)
+            // Claude's response display
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Claude Response:")
+                    .font(.headline)
+                
+                ScrollView {
+                    Text(appState.claudeResponse)
+                        .font(.system(.body, design: .monospaced))
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .background(Color(.textBackgroundColor).opacity(0.3))
+                .cornerRadius(8)
+                .frame(height: 180)
             }
-        }
-        .padding(.vertical, 5)
-    }
-    
-    private var formattedTime: String {
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        return formatter.string(from: entry.timestamp)
-    }
-}
-
-struct ModelOutputView: View {
-    @EnvironmentObject var appState: AppState
-    
-    var body: some View {
-        VStack(alignment: .leading) {
-            Text("Model Output")
-                .font(.headline)
-                .padding(.bottom, 5)
             
-            ScrollView {
-                Text(appState.modelOutputText)
-                    .font(.system(.body, design: .monospaced))
+            // Voice recognition at bottom
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Voice Recognition:")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                
+                Text(appState.transcript)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
             }
-            .background(Color(.textBackgroundColor).opacity(0.3))
-            .cornerRadius(4)
+            .padding(.top, 4)
         }
         .padding()
-    }
-}
-
-struct StatusBar: View {
-    @EnvironmentObject var appState: AppState
-    
-    var body: some View {
-        HStack {
-            Text("Speech: \(appState.transcript)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer()
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 5)
-        .background(Color(NSColor.windowBackgroundColor))
+        .frame(width: 700, height: 500)
     }
 }
 
@@ -233,7 +162,6 @@ class OpenAIRealtimeAPI {
     private var terminalPipe: Pipe?
     private var appState: AppState
     private var terminalOutputQueue: [String] = []
-    private var currentPrompt: String = ""
     
     init(appState: AppState) {
         self.appState = appState
@@ -263,8 +191,96 @@ class OpenAIRealtimeAPI {
     
     func startClaudeTerminal() {
         DispatchQueue.global(qos: .userInitiated).async {
-            // Start Claude CLI in interactive mode
-            self.executeTerminalCommand("/opt/homebrew/bin/claude", callID: "claude-terminal")
+            print("Starting persistent Claude terminal session...")
+            
+            // Get the current working directory
+            let currentDirectory = FileManager.default.currentDirectoryPath
+            print("Current directory: \(currentDirectory)")
+            
+            // Start persistent Claude CLI in the current working directory
+            self.startPersistentClaudeSession(in: currentDirectory)
+        }
+    }
+    
+    func startPersistentClaudeSession(in directory: String) {
+        // Create a persistent process for Claude CLI
+        persistentTerminalProcess = Process()
+        persistentTerminalProcess?.launchPath = "/bin/bash"
+        
+        // Change to the specified directory and start Claude in interactive mode
+        persistentTerminalProcess?.arguments = ["-c", "cd \(directory) && /opt/homebrew/bin/claude"]
+        
+        // Set up environment variables
+        var env = ProcessInfo.processInfo.environment
+        let path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = path
+        persistentTerminalProcess?.environment = env
+        
+        // Create pipes for input and output
+        let outputPipe = Pipe()
+        let inputPipe = Pipe()
+        
+        persistentTerminalProcess?.standardOutput = outputPipe
+        persistentTerminalProcess?.standardError = outputPipe
+        persistentTerminalProcess?.standardInput = inputPipe
+        
+        // Store the pipes for later use
+        terminalPipe = inputPipe
+        
+        // Set up continuous reading from the output pipe
+        let outputHandle = outputPipe.fileHandleForReading
+        outputHandle.readabilityHandler = { [weak self] handle in
+            guard let self = self else { return }
+            
+            let data = handle.availableData
+            if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
+                print("Claude output: \(output)")
+                
+                // Process and update UI with Claude's output
+                self.processClaudeOutput(output)
+            }
+        }
+        
+        // Launch the process
+        do {
+            try persistentTerminalProcess?.run()
+            print("Claude terminal session started successfully")
+        } catch {
+            print("Failed to start Claude terminal session: \(error)")
+        }
+    }
+    
+    func processClaudeOutput(_ output: String) {
+        // Add the output to the queue
+        terminalOutputQueue.append(output)
+        
+        // Combine all outputs for display
+        let combinedOutput = terminalOutputQueue.joined()
+        
+        // Update the UI with Claude's response
+        appState.updateClaudeResponse(combinedOutput)
+        
+        // Also log the output
+        print("Claude Response Update: \(output.prefix(100))...")
+    }
+    
+    func sendCommandToClaudeTerminal(_ command: String) {
+        guard let inputPipe = terminalPipe, 
+              persistentTerminalProcess?.isRunning == true else {
+            print("Cannot send command: Claude terminal not running")
+            return
+        }
+        
+        // Add newline to ensure command is executed
+        let fullCommand = command + "\n"
+        
+        if let data = fullCommand.data(using: .utf8) {
+            do {
+                try inputPipe.fileHandleForWriting.write(contentsOf: data)
+                print("Sent command to Claude: \(command)")
+            } catch {
+                print("Failed to send command to Claude: \(error)")
+            }
         }
     }
     
@@ -290,38 +306,51 @@ class OpenAIRealtimeAPI {
     }
     
     func defineFunction() {
+        // Define the editPrompt function parameters
+        let promptProperty: [String: String] = [
+            "type": "string",
+            "description": "The refined or new prompt to be displayed and eventually sent to Claude Code."
+        ]
+        
+        let editPromptProperties: [String: [String: String]] = [
+            "prompt": promptProperty
+        ]
+        
+        let editPromptParams: [String: Any] = [
+            "type": "object", 
+            "properties": editPromptProperties,
+            "required": ["prompt"]
+        ]
+        
+        // Define the sendPrompt function parameters
+        let sendPromptParams: [String: Any] = [
+            "type": "object",
+            "properties": [String: Any](),
+            "required": [String]()
+        ]
+        
+        // Create the function definitions
+        let editPromptFunction: [String: Any] = [
+            "type": "function",
+            "name": "editPrompt",
+            "description": "Refines or replaces the current prompt based on user input. The updated prompt is displayed on screen in real-time.",
+            "parameters": editPromptParams
+        ]
+        
+        let sendPromptFunction: [String: Any] = [
+            "type": "function",
+            "name": "sendPrompt",
+            "description": "Transmits the final, refined prompt to the Claude Code coding agent for execution.",
+            "parameters": sendPromptParams
+        ]
+        
+        // Create the complete payload
+        let tools = [editPromptFunction, sendPromptFunction]
+        let session: [String: Any] = ["tools": tools]
         let functionPayload: [String: Any] = [
             "type": "session.update",
-            "session": [
-                "tools": [
-                    [
-                        "type": "function",
-                        "name": "editPrompt",
-                        "description": "Refines or replaces the current prompt based on user input. The updated prompt is displayed on screen in real-time.",
-                        "parameters": [
-                            "type": "object",
-                            "properties": [
-                                "prompt": [
-                                    "type": "string",
-                                    "description": "The refined or new prompt to be displayed and eventually sent to Claude Code."
-                                    ]
-                                ],
-                                "required": ["prompt"]
-                            ]
-                        ],
-                    [
-                        "type": "function",
-                        "name": "sendPrompt",
-                        "description": "Transmits the final, refined prompt to the Claude Code coding agent for execution.",
-                        "parameters": [
-                            "type": "object",
-                            "properties": {},
-                            "required": []
-                            ]
-                        ]
-                    ]
-                ]
-            ]
+            "session": session
+        ]
         
         send(functionPayload)
     }
@@ -465,7 +494,7 @@ class OpenAIRealtimeAPI {
                                     
                                     if let type = item["type"] as? String, type == "function_call",
                                        let callID = item["call_id"] as? String,
-                                       let functionName = item["function_name"] as? String,
+                                       let functionName = item["name"] as? String,
                                        let argumentsString = item["arguments"] as? String,
                                        let argumentsData = argumentsString.data(using: .utf8) {
                                         
@@ -549,9 +578,6 @@ class OpenAIRealtimeAPI {
             let result = "exit code: \(process.terminationStatus)\n" + "output: \(output)"
             print("[[Command Output]] \(result)")
             
-            // Update the UI with command and output
-            self.appState.addCommand(command, output: output)
-            
             sendTerminalOutputToModel(callID: callID, output: result)
         }
     }
@@ -608,12 +634,10 @@ class OpenAIRealtimeAPI {
     // Handle the editPrompt function call from the model
     func handleEditPrompt(prompt: String, callID: String) {
         print("Updating prompt: \(prompt)")
-        currentPrompt = prompt
         
-        // Update the UI with the new prompt
-        DispatchQueue.main.async {
-            self.appState.updateModelOutput("Current prompt: \(prompt)")
-        }
+        // Update the prompt in the AppState
+        appState.updateCurrentPrompt(prompt)
+        appState.updatePromptStatus("Prompt updated")
         
         // Send function output back to model
         let output = "Prompt updated successfully"
@@ -622,22 +646,25 @@ class OpenAIRealtimeAPI {
     
     // Handle the sendPrompt function call from the model
     func handleSendPrompt(callID: String) {
-        if currentPrompt.isEmpty {
+        if appState.currentPrompt.isEmpty {
             let output = "Error: No prompt available to send"
+            appState.updatePromptStatus("Error: No prompt to send")
             sendFunctionOutputToModel(callID: callID, output: output)
             return
         }
         
-        print("Sending prompt to Claude Code: \(currentPrompt)")
+        print("Sending prompt to Claude: \(appState.currentPrompt)")
+        appState.updatePromptStatus("Sending to Claude...")
         
-        // Execute the command
-        executeTerminalCommand(claudeCodeCommand, callID: "claude-code-execution")
+        // Send the prompt directly to the persistent Claude terminal session
+        sendCommandToClaudeTerminal(appState.currentPrompt)
         
         // Reset current prompt after sending
-        currentPrompt = ""
+        appState.updateCurrentPrompt("")
+        appState.updatePromptStatus("Prompt sent to Claude")
         
         // Send function output back to model
-        let output = "Prompt sent to Claude Code"
+        let output = "Prompt sent to Claude"
         sendFunctionOutputToModel(callID: callID, output: output)
     }
     
