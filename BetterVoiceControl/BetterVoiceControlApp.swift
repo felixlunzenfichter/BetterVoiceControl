@@ -1,23 +1,5 @@
 let INSTRUCTIONS = """
-Instructions for Better Voice Control Assistants
-
-You are operating within the Better Voice Control application, an accessibility tool designed for users who cannot use a mouse or keyboard and rely on hands-free operation.
-
-In this role, you will execute all tasks through terminal commands via the Claude CLI or macOS functions. You are interacting with Claude in the terminal, which is a more intelligent way to interact with the system. Claude has extensive capabilities to help with files, code, and terminal operations.
-
-Important information about the environment:
-- You are communicating with the Claude CLI in the terminal
-- Claude can perform complex tasks through the terminal
-- Use Claude's capabilities to handle file operations, coding tasks, and system interactions
-- You can send commands to Claude to execute terminal operations
-
-Please remember:
-
-	•	Never suggest that the user perform any action themselves. This would always be highly inappropriate and offensive.
-	•	Speech output is limited to a maximum length of one sentence.
-	•	If additional information is needed that is longer than a sentence, provide it through text output. Be aware that all terminal commands, function calls, and their outputs can be seen by the user and do not need to be repeated through voice. Voice is extremely costly, so anything beyond one sentence must be communicated via text for the user to read. This ensures a quick experience, delivering concise answers without delay.
-
-Your goal is to ensure a respectful, efficient, and fully hands-free experience by leveraging Claude's capabilities in the terminal.
+Your task is to be a prompt generator in a coding application designed for hands-free computing. Listen to the user’s voice input, interpret it carefully, and transform it into a clear, context-rich natural language prompt targeted at a coding agent called Claude Code. Apply optimal prompt engineering techniques to refine the user’s instructions before sending the final prompt to Claude Code for execution.
 """
 
 import SwiftUI
@@ -251,6 +233,7 @@ class OpenAIRealtimeAPI {
     private var terminalPipe: Pipe?
     private var appState: AppState
     private var terminalOutputQueue: [String] = []
+    private var currentPrompt: String = ""
     
     init(appState: AppState) {
         self.appState = appState
@@ -313,17 +296,27 @@ class OpenAIRealtimeAPI {
                 "tools": [
                     [
                         "type": "function",
-                        "name": "executeCommandOnTerminal",
-                        "description": "Executes a terminal command and returns the output.",
+                        "name": "editPrompt",
+                        "description": "Refines or replaces the current prompt based on user input. The updated prompt is displayed on screen in real-time.",
                         "parameters": [
                             "type": "object",
                             "properties": [
-                                "command": [
+                                "prompt": [
                                     "type": "string",
-                                    "description": "The terminal command to execute."
+                                    "description": "The refined or new prompt to be displayed and eventually sent to Claude Code."
                                     ]
                                 ],
-                                "required": ["command"]
+                                "required": ["prompt"]
+                            ]
+                        ],
+                    [
+                        "type": "function",
+                        "name": "sendPrompt",
+                        "description": "Transmits the final, refined prompt to the Claude Code coding agent for execution.",
+                        "parameters": [
+                            "type": "object",
+                            "properties": {},
+                            "required": []
                             ]
                         ]
                     ]
@@ -472,11 +465,23 @@ class OpenAIRealtimeAPI {
                                     
                                     if let type = item["type"] as? String, type == "function_call",
                                        let callID = item["call_id"] as? String,
+                                       let functionName = item["function_name"] as? String,
                                        let argumentsString = item["arguments"] as? String,
-                                       let argumentsData = argumentsString.data(using: .utf8),
-                                       let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
-                                       let command = argumentsDict["command"] as? String {
-                                        executeTerminalCommand(command, callID: callID)
+                                       let argumentsData = argumentsString.data(using: .utf8) {
+                                        
+                                        // Route to the appropriate function handler
+                                        switch functionName {
+                                        case "editPrompt":
+                                            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
+                                                  let prompt = argumentsDict["prompt"] as? String else {
+                                                fatalError("Failed to parse editPrompt arguments")
+                                            }
+                                            handleEditPrompt(prompt: prompt, callID: callID)
+                                        case "sendPrompt":
+                                            handleSendPrompt(callID: callID)
+                                        default:
+                                            fatalError("Unknown function: \(functionName)")
+                                        }
                                     } else if let contentArray = item["content"] as? [[String: Any]],
                                               let content = contentArray.first,
                                               let transcript = content["transcript"] as? String {
@@ -598,6 +603,56 @@ class OpenAIRealtimeAPI {
                 print("Audio playback started.")
             }
         }
+    }
+    
+    // Handle the editPrompt function call from the model
+    func handleEditPrompt(prompt: String, callID: String) {
+        print("Updating prompt: \(prompt)")
+        currentPrompt = prompt
+        
+        // Update the UI with the new prompt
+        DispatchQueue.main.async {
+            self.appState.updateModelOutput("Current prompt: \(prompt)")
+        }
+        
+        // Send function output back to model
+        let output = "Prompt updated successfully"
+        sendFunctionOutputToModel(callID: callID, output: output)
+    }
+    
+    // Handle the sendPrompt function call from the model
+    func handleSendPrompt(callID: String) {
+        if currentPrompt.isEmpty {
+            let output = "Error: No prompt available to send"
+            sendFunctionOutputToModel(callID: callID, output: output)
+            return
+        }
+        
+        print("Sending prompt to Claude Code: \(currentPrompt)")
+        
+        // Execute the command
+        executeTerminalCommand(claudeCodeCommand, callID: "claude-code-execution")
+        
+        // Reset current prompt after sending
+        currentPrompt = ""
+        
+        // Send function output back to model
+        let output = "Prompt sent to Claude Code"
+        sendFunctionOutputToModel(callID: callID, output: output)
+    }
+    
+    // Helper method to send function call outputs back to the model
+    func sendFunctionOutputToModel(callID: String, output: String) {
+        let payload: [String: Any] = [
+            "type": "conversation.item.create",
+            "item": [
+                "type": "function_call_output",
+                "call_id": callID,
+                "output": output
+            ]
+        ]
+        
+        send(payload)
     }
 }
 
