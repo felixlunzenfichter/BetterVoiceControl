@@ -14,6 +14,7 @@ class AppState: ObservableObject {
     @Published var modelOutputText: String = ""
     @Published var currentPrompt: String = ""
     @Published var promptStatus: String = "Ready"
+    @Published var claudeResponse: String = ""
     
     func updateModelOutput(_ text: String) {
         DispatchQueue.main.async {
@@ -30,6 +31,12 @@ class AppState: ObservableObject {
     func updatePromptStatus(_ status: String) {
         DispatchQueue.main.async {
             self.promptStatus = status
+        }
+    }
+    
+    func updateClaudeResponse(_ response: String) {
+        DispatchQueue.main.async {
+            self.claudeResponse = response
         }
     }
 }
@@ -60,7 +67,7 @@ struct VoiceControlledMacApp: App {
                         api.startClaudeTerminal()
                     }
                 }
-                .frame(width: 600, height: 400)
+                .frame(width: 700, height: 500)
                 .fixedSize()
         }
         .windowStyle(HiddenTitleBarWindowStyle())
@@ -81,7 +88,7 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             // Status indicator
             HStack {
                 Circle()
@@ -94,10 +101,10 @@ struct ContentView: View {
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
-            .padding(.top)
+            .padding(.top, 8)
             
             // Current prompt display
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Current Prompt:")
                     .font(.headline)
                 
@@ -109,25 +116,40 @@ struct ContentView: View {
                 }
                 .background(Color(.textBackgroundColor).opacity(0.3))
                 .cornerRadius(8)
-                .frame(height: 250)
+                .frame(height: 120)
             }
             
-            // Model output
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Voice Recognition:")
+            // Claude's response display
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Claude Response:")
                     .font(.headline)
                 
-                Text(appState.transcript)
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
+                ScrollView {
+                    Text(appState.claudeResponse)
+                        .font(.system(.body, design: .monospaced))
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .background(Color(.textBackgroundColor).opacity(0.3))
+                .cornerRadius(8)
+                .frame(height: 180)
             }
             
-            Spacer()
+            // Voice recognition at bottom
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Voice Recognition:")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                
+                Text(appState.transcript)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.top, 4)
         }
         .padding()
-        .frame(width: 600, height: 400)
+        .frame(width: 700, height: 500)
     }
 }
 
@@ -169,8 +191,96 @@ class OpenAIRealtimeAPI {
     
     func startClaudeTerminal() {
         DispatchQueue.global(qos: .userInitiated).async {
-            // Start Claude CLI in interactive mode
-            self.executeTerminalCommand("/opt/homebrew/bin/claude", callID: "claude-terminal")
+            print("Starting persistent Claude terminal session...")
+            
+            // Get the current working directory
+            let currentDirectory = FileManager.default.currentDirectoryPath
+            print("Current directory: \(currentDirectory)")
+            
+            // Start persistent Claude CLI in the current working directory
+            self.startPersistentClaudeSession(in: currentDirectory)
+        }
+    }
+    
+    func startPersistentClaudeSession(in directory: String) {
+        // Create a persistent process for Claude CLI
+        persistentTerminalProcess = Process()
+        persistentTerminalProcess?.launchPath = "/bin/bash"
+        
+        // Change to the specified directory and start Claude in interactive mode
+        persistentTerminalProcess?.arguments = ["-c", "cd \(directory) && /opt/homebrew/bin/claude"]
+        
+        // Set up environment variables
+        var env = ProcessInfo.processInfo.environment
+        let path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = path
+        persistentTerminalProcess?.environment = env
+        
+        // Create pipes for input and output
+        let outputPipe = Pipe()
+        let inputPipe = Pipe()
+        
+        persistentTerminalProcess?.standardOutput = outputPipe
+        persistentTerminalProcess?.standardError = outputPipe
+        persistentTerminalProcess?.standardInput = inputPipe
+        
+        // Store the pipes for later use
+        terminalPipe = inputPipe
+        
+        // Set up continuous reading from the output pipe
+        let outputHandle = outputPipe.fileHandleForReading
+        outputHandle.readabilityHandler = { [weak self] handle in
+            guard let self = self else { return }
+            
+            let data = handle.availableData
+            if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
+                print("Claude output: \(output)")
+                
+                // Process and update UI with Claude's output
+                self.processClaudeOutput(output)
+            }
+        }
+        
+        // Launch the process
+        do {
+            try persistentTerminalProcess?.run()
+            print("Claude terminal session started successfully")
+        } catch {
+            print("Failed to start Claude terminal session: \(error)")
+        }
+    }
+    
+    func processClaudeOutput(_ output: String) {
+        // Add the output to the queue
+        terminalOutputQueue.append(output)
+        
+        // Combine all outputs for display
+        let combinedOutput = terminalOutputQueue.joined()
+        
+        // Update the UI with Claude's response
+        appState.updateClaudeResponse(combinedOutput)
+        
+        // Also log the output
+        print("Claude Response Update: \(output.prefix(100))...")
+    }
+    
+    func sendCommandToClaudeTerminal(_ command: String) {
+        guard let inputPipe = terminalPipe, 
+              persistentTerminalProcess?.isRunning == true else {
+            print("Cannot send command: Claude terminal not running")
+            return
+        }
+        
+        // Add newline to ensure command is executed
+        let fullCommand = command + "\n"
+        
+        if let data = fullCommand.data(using: .utf8) {
+            do {
+                try inputPipe.fileHandleForWriting.write(contentsOf: data)
+                print("Sent command to Claude: \(command)")
+            } catch {
+                print("Failed to send command to Claude: \(error)")
+            }
         }
     }
     
@@ -543,21 +653,18 @@ class OpenAIRealtimeAPI {
             return
         }
         
-        print("Sending prompt to Claude Code: \(appState.currentPrompt)")
-        appState.updatePromptStatus("Sending to Claude Code...")
+        print("Sending prompt to Claude: \(appState.currentPrompt)")
+        appState.updatePromptStatus("Sending to Claude...")
         
-        // Format the command to send to Claude Code CLI
-        let claudeCodeCommand = "/opt/homebrew/bin/claude code \"\(appState.currentPrompt.replacingOccurrences(of: "\"", with: "\\\""))\""
-        
-        // Execute the command
-        executeTerminalCommand(claudeCodeCommand, callID: "claude-code-execution")
+        // Send the prompt directly to the persistent Claude terminal session
+        sendCommandToClaudeTerminal(appState.currentPrompt)
         
         // Reset current prompt after sending
         appState.updateCurrentPrompt("")
-        appState.updatePromptStatus("Prompt sent to Claude Code")
+        appState.updatePromptStatus("Prompt sent to Claude")
         
         // Send function output back to model
-        let output = "Prompt sent to Claude Code"
+        let output = "Prompt sent to Claude"
         sendFunctionOutputToModel(callID: callID, output: output)
     }
     
