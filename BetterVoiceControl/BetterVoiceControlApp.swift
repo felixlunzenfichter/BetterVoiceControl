@@ -9,34 +9,12 @@ import AVFoundation
 import Foundation
 
 class AppState: ObservableObject {
-    @Published var transcript: String = ""
     @Published var isRecording: Bool = false
-    @Published var modelOutputText: String = ""
     @Published var currentPrompt: String = ""
-    @Published var promptStatus: String = "Ready"
-    @Published var claudeResponse: String = ""
-    
-    func updateModelOutput(_ text: String) {
-        DispatchQueue.main.async {
-            self.modelOutputText = text
-        }
-    }
     
     func updateCurrentPrompt(_ prompt: String) {
         DispatchQueue.main.async {
             self.currentPrompt = prompt
-        }
-    }
-    
-    func updatePromptStatus(_ status: String) {
-        DispatchQueue.main.async {
-            self.promptStatus = status
-        }
-    }
-    
-    func updateClaudeResponse(_ response: String) {
-        DispatchQueue.main.async {
-            self.claudeResponse = response
         }
     }
 }
@@ -60,17 +38,8 @@ struct VoiceControlledMacApp: App {
                 .environmentObject(appState)
                 .onAppear {
                     api.connect()
-                    // Initialize with a welcome message
-                    appState.updateCurrentPrompt("Ready to receive voice input...")
-                    appState.updatePromptStatus("Listening for commands")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                        api.startClaudeTerminal()
-                    }
                 }
-                .frame(width: 700, height: 500)
-                .fixedSize()
         }
-        .windowStyle(HiddenTitleBarWindowStyle())
     }
     
     func requestMicrophonePermissions() {
@@ -88,68 +57,13 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     
     var body: some View {
-        VStack(spacing: 12) {
-            // Status indicator
-            HStack {
-                Circle()
-                    .fill(appState.isRecording ? Color.red : Color.gray)
-                    .frame(width: 12, height: 12)
-                Text(appState.isRecording ? "Listening..." : "Idle")
-                    .font(.headline)
-                Spacer()
-                Text("Status: \(appState.promptStatus)")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.top, 8)
+        VStack {
+            Text(appState.isRecording ? "●" : "○")
             
-            // Current prompt display
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Current Prompt:")
-                    .font(.headline)
-                
-                ScrollView {
-                    Text(appState.currentPrompt)
-                        .font(.system(.body, design: .monospaced))
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .background(Color(.textBackgroundColor).opacity(0.3))
-                .cornerRadius(8)
-                .frame(height: 120)
+            if !appState.currentPrompt.isEmpty {
+                Text(appState.currentPrompt)
             }
-            
-            // Claude's response display
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Claude Response:")
-                    .font(.headline)
-                
-                ScrollView {
-                    Text(appState.claudeResponse)
-                        .font(.system(.body, design: .monospaced))
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .background(Color(.textBackgroundColor).opacity(0.3))
-                .cornerRadius(8)
-                .frame(height: 180)
-            }
-            
-            // Voice recognition at bottom
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Voice Recognition:")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                
-                Text(appState.transcript)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.top, 4)
         }
-        .padding()
-        .frame(width: 700, height: 500)
     }
 }
 
@@ -158,10 +72,7 @@ class OpenAIRealtimeAPI {
     private let audioEngine = AVAudioEngine()
     private let dispatchQueue = DispatchQueue(label: "com.openai.realtimeapi")
     private let audioPlayer = AVAudioPlayerNode()
-    private var persistentTerminalProcess: Process?
-    private var terminalPipe: Pipe?
     private var appState: AppState
-    private var terminalOutputQueue: [String] = []
     
     init(appState: AppState) {
         self.appState = appState
@@ -189,100 +100,6 @@ class OpenAIRealtimeAPI {
         setupAudioEngine()
     }
     
-    func startClaudeTerminal() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            print("Starting persistent Claude terminal session...")
-            
-            // Get the current working directory
-            let currentDirectory = FileManager.default.currentDirectoryPath
-            print("Current directory: \(currentDirectory)")
-            
-            // Start persistent Claude CLI in the current working directory
-            self.startPersistentClaudeSession(in: currentDirectory)
-        }
-    }
-    
-    func startPersistentClaudeSession(in directory: String) {
-        // Create a persistent process for Claude CLI
-        persistentTerminalProcess = Process()
-        persistentTerminalProcess?.launchPath = "/bin/bash"
-        
-        // Change to the specified directory and start Claude in interactive mode
-        persistentTerminalProcess?.arguments = ["-c", "cd \(directory) && /opt/homebrew/bin/claude"]
-        
-        // Set up environment variables
-        var env = ProcessInfo.processInfo.environment
-        let path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        env["PATH"] = path
-        persistentTerminalProcess?.environment = env
-        
-        // Create pipes for input and output
-        let outputPipe = Pipe()
-        let inputPipe = Pipe()
-        
-        persistentTerminalProcess?.standardOutput = outputPipe
-        persistentTerminalProcess?.standardError = outputPipe
-        persistentTerminalProcess?.standardInput = inputPipe
-        
-        // Store the pipes for later use
-        terminalPipe = inputPipe
-        
-        // Set up continuous reading from the output pipe
-        let outputHandle = outputPipe.fileHandleForReading
-        outputHandle.readabilityHandler = { [weak self] handle in
-            guard let self = self else { return }
-            
-            let data = handle.availableData
-            if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
-                print("Claude output: \(output)")
-                
-                // Process and update UI with Claude's output
-                self.processClaudeOutput(output)
-            }
-        }
-        
-        // Launch the process
-        do {
-            try persistentTerminalProcess?.run()
-            print("Claude terminal session started successfully")
-        } catch {
-            print("Failed to start Claude terminal session: \(error)")
-        }
-    }
-    
-    func processClaudeOutput(_ output: String) {
-        // Add the output to the queue
-        terminalOutputQueue.append(output)
-        
-        // Combine all outputs for display
-        let combinedOutput = terminalOutputQueue.joined()
-        
-        // Update the UI with Claude's response
-        appState.updateClaudeResponse(combinedOutput)
-        
-        // Also log the output
-        print("Claude Response Update: \(output.prefix(100))...")
-    }
-    
-    func sendCommandToClaudeTerminal(_ command: String) {
-        guard let inputPipe = terminalPipe, 
-              persistentTerminalProcess?.isRunning == true else {
-            print("Cannot send command: Claude terminal not running")
-            return
-        }
-        
-        // Add newline to ensure command is executed
-        let fullCommand = command + "\n"
-        
-        if let data = fullCommand.data(using: .utf8) {
-            do {
-                try inputPipe.fileHandleForWriting.write(contentsOf: data)
-                print("Sent command to Claude: \(command)")
-            } catch {
-                print("Failed to send command to Claude: \(error)")
-            }
-        }
-    }
     
     func send(_ jsonObj: [String: Any]) {
         if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj),
@@ -357,7 +174,6 @@ class OpenAIRealtimeAPI {
     
     func setupAudioEngine() {
         let inputNode = audioEngine.inputNode
-//        let outputNode = audioEngine.outputNode
         
         let inputFormat = inputNode.inputFormat(forBus: 0)
         print(inputFormat)
@@ -476,9 +292,7 @@ class OpenAIRealtimeAPI {
                                         print("Response failed: \(response["status_details"] ?? "Unknown error")")
                                     }
                                 case "response.function_call_arguments.delta":
-                                    if let delta = json["delta"] as? String {
-                                        // Update UI with function call delta
-                                    }
+                                    break
                                 case "response.function_call_arguments.done":
                                     break
                                 case "input_audio_buffer.speech_started":
@@ -515,14 +329,9 @@ class OpenAIRealtimeAPI {
                                               let content = contentArray.first,
                                               let transcript = content["transcript"] as? String {
                                         print("[[Model Text Output]] \(transcript)")
-                                        self.appState.updateModelOutput(transcript)
                                     }
                                 case "response.audio_transcript.delta":
-                                    if let delta = json["delta"] as? String {
-                                        DispatchQueue.main.async {
-                                            self.appState.transcript += delta
-                                        }
-                                    }
+                                    break
                                 case "response.audio.delta":
                                     if let delta = json["delta"] as? String {
                                         playReceivedAudio(base64String: delta)
@@ -532,7 +341,8 @@ class OpenAIRealtimeAPI {
                                 case "error":
                                     print("Error: \(json)")
                                 default:
-                                    print("Unhandled event type: \(eventType)")
+                                    // print("Unhandled event type: \(eventType)")
+                                    break
                                 }
                             }
                             self.receiveResponse()
@@ -550,50 +360,6 @@ class OpenAIRealtimeAPI {
                 }
             }
         }
-    }
-
-    func executeTerminalCommand(_ command: String, callID: String) {
-        print("[[Executing Command]] \(command)")
-        
-        let process = Process()
-        process.launchPath = "/bin/bash"
-        process.arguments = ["-c", command]
-        
-        // Set the proper environment variables to ensure binaries like node can be found
-        var env = ProcessInfo.processInfo.environment
-        let path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        env["PATH"] = path
-        process.environment = env
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        
-        process.launch()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        
-        if let output = String(data: data, encoding: .utf8) {
-            let result = "exit code: \(process.terminationStatus)\n" + "output: \(output)"
-            print("[[Command Output]] \(result)")
-            
-            sendTerminalOutputToModel(callID: callID, output: result)
-        }
-    }
-    
-    func sendTerminalOutputToModel(callID: String, output: String) {
-        let payload: [String: Any] = [
-            "type": "conversation.item.create",
-            "item": [
-                "type": "function_call_output",
-                "call_id": callID,
-                "output": output
-            ]
-        ]
-        
-        send(payload)
-        send(["type": "response.create"])
     }
     
     func stopAudioPlayback() {
@@ -631,13 +397,48 @@ class OpenAIRealtimeAPI {
         }
     }
     
+    func sendCommandToClaudeTerminal(_ command: String) {
+        print("Preparing to inject command into active terminal...")
+        
+        // Use AppleScript to send the command to the active Terminal window
+        let escapedCommand = command.replacingOccurrences(of: "\\", with: "\\\\")
+                                   .replacingOccurrences(of: "\"", with: "\\\"")
+                                   .replacingOccurrences(of: "'", with: "\\'")
+        
+        let script = """
+        tell application "Terminal"
+            activate
+            delay 0.5
+            tell application "System Events"
+                keystroke "\(escapedCommand)"
+                delay 0.5
+                keystroke return
+            end tell
+        end tell
+        """
+        
+        let process = Process()
+        process.launchPath = "/usr/bin/osascript"
+        process.arguments = ["-e", script]
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+            
+            print("Command sent to terminal: \(command)")
+            // Clear the prompt after sending
+            appState.updateCurrentPrompt("")
+        } catch {
+            print("Error sending command via AppleScript: \(error)")
+        }
+    }
+    
     // Handle the editPrompt function call from the model
     func handleEditPrompt(prompt: String, callID: String) {
         print("Updating prompt: \(prompt)")
         
         // Update the prompt in the AppState
         appState.updateCurrentPrompt(prompt)
-        appState.updatePromptStatus("Prompt updated")
         
         // Send function output back to model
         let output = "Prompt updated successfully"
@@ -648,20 +449,14 @@ class OpenAIRealtimeAPI {
     func handleSendPrompt(callID: String) {
         if appState.currentPrompt.isEmpty {
             let output = "Error: No prompt available to send"
-            appState.updatePromptStatus("Error: No prompt to send")
             sendFunctionOutputToModel(callID: callID, output: output)
             return
         }
         
         print("Sending prompt to Claude: \(appState.currentPrompt)")
-        appState.updatePromptStatus("Sending to Claude...")
         
-        // Send the prompt directly to the persistent Claude terminal session
+        // Send the prompt directly to the terminal
         sendCommandToClaudeTerminal(appState.currentPrompt)
-        
-        // Reset current prompt after sending
-        appState.updateCurrentPrompt("")
-        appState.updatePromptStatus("Prompt sent to Claude")
         
         // Send function output back to model
         let output = "Prompt sent to Claude"
@@ -683,7 +478,7 @@ class OpenAIRealtimeAPI {
     }
 }
 
-/* Auxiliary Functions */
+// Audio Processing Functions
 func base64ToAudioBuffer(base64String: String, sampleRate: Double = 24000, channels: AVAudioChannelCount = 1) -> AVAudioPCMBuffer? {
     guard let pcmData = Data(base64Encoded: base64String) else {
         print("Error decoding base64 string")
