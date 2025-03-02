@@ -317,7 +317,10 @@ class OpenAIRealtimeAPI {
                                         case "editPrompt":
                                             guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
                                                   let prompt = argumentsDict["prompt"] as? String else {
-                                                fatalError("Failed to parse editPrompt arguments")
+                                                print("Failed to parse editPrompt arguments")
+                                                let errorOutput = "Error: Failed to parse the prompt argument"
+                                                sendFunctionOutputToModel(callID: callID, output: errorOutput)
+                                                return
                                             }
                                             handleEditPrompt(prompt: prompt, callID: callID)
                                         case "sendPrompt":
@@ -398,30 +401,32 @@ class OpenAIRealtimeAPI {
     }
     
     func sendCommandToClaudeTerminal(_ command: String) {
-        print("Preparing to inject command into active terminal...")
-        
-        // Use AppleScript to send the command to the active Terminal window
-        let escapedCommand = command.replacingOccurrences(of: "\\", with: "\\\\")
-                                   .replacingOccurrences(of: "\"", with: "\\\"")
-                                   .replacingOccurrences(of: "'", with: "\\'")
-        
-        let script = """
-        tell application "Terminal"
-            activate
-            delay 0.5
-            tell application "System Events"
-                keystroke "\(escapedCommand)"
-                delay 0.5
-                keystroke return
-            end tell
-        end tell
-        """
-        
-        let process = Process()
-        process.launchPath = "/usr/bin/osascript"
-        process.arguments = ["-e", script]
+
         
         do {
+            print("Preparing to inject command into active terminal...")
+            
+            // Use AppleScript to send the command to the active Terminal window
+            let escapedCommand = command.replacingOccurrences(of: "\\", with: "\\\\")
+                                       .replacingOccurrences(of: "\"", with: "\\\"")
+                                       .replacingOccurrences(of: "'", with: "\\'")
+            
+            let script = """
+            tell application "Terminal"
+                activate
+                delay 0.5
+                tell application "System Events"
+                    keystroke "\(escapedCommand)"
+                    delay 0.5
+                    keystroke return
+                end tell
+            end tell
+            """
+            
+            let process = Process()
+            process.launchPath = "/usr/bin/osascript"
+            process.arguments = ["-e", script]
+            
             try process.run()
             process.waitUntilExit()
             
