@@ -146,6 +146,22 @@ class OpenAIRealtimeAPI {
             "required": [String]()
         ]
         
+        // Define the executeKeystrokes function parameters
+        let keystrokesProperty: [String: String] = [
+            "type": "string",
+            "description": "AppleScript keystroke commands to execute in Terminal. IMPORTANT: For 'decline', use the special sequence: 'key code 125 -- down\\ndelay 0.1\\nkey code 125 -- down\\ndelay 0.1\\nkey code 36 -- enter'. For other commands, use standard AppleScript key codes like 'key code 36' (enter), 'key code 53' (escape). Commands will be inserted into: tell application \"Terminal\"\\nactivate\\ntell application \"System Events\"\\n[YOUR COMMANDS HERE]\\nend tell\\nend tell"
+        ]
+        
+        let executeKeystrokesProperties: [String: [String: String]] = [
+            "keystrokes": keystrokesProperty
+        ]
+        
+        let executeKeystrokesParams: [String: Any] = [
+            "type": "object",
+            "properties": executeKeystrokesProperties,
+            "required": ["keystrokes"]
+        ]
+        
         // Create the function definitions
         let editPromptFunction: [String: Any] = [
             "type": "function",
@@ -161,8 +177,15 @@ class OpenAIRealtimeAPI {
             "parameters": sendPromptParams
         ]
         
+        let executeKeystrokesFunction: [String: Any] = [
+            "type": "function",
+            "name": "executeKeystrokes",
+            "description": "Executes AppleScript keystroke commands in Terminal for controlling Claude Code CLI. Use this for terminal navigation - specifically for 'decline' which requires a special sequence of keystrokes.",
+            "parameters": executeKeystrokesParams
+        ]
+        
         // Create the complete payload
-        let tools = [editPromptFunction, sendPromptFunction]
+        let tools = [editPromptFunction, sendPromptFunction, executeKeystrokesFunction]
         let session: [String: Any] = ["tools": tools]
         let functionPayload: [String: Any] = [
             "type": "session.update",
@@ -320,11 +343,22 @@ class OpenAIRealtimeAPI {
                                                 print("Failed to parse editPrompt arguments")
                                                 let errorOutput = "Error: Failed to parse the prompt argument"
                                                 sendFunctionOutputToModel(callID: callID, output: errorOutput)
+                                                self.receiveResponse()
                                                 return
                                             }
                                             handleEditPrompt(prompt: prompt, callID: callID)
                                         case "sendPrompt":
                                             handleSendPrompt(callID: callID)
+                                        case "executeKeystrokes":
+                                            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
+                                                  let keystrokes = argumentsDict["keystrokes"] as? String else {
+                                                print("Failed to parse executeKeystrokes arguments")
+                                                let errorOutput = "Error: Failed to parse the keystrokes argument"
+                                                sendFunctionOutputToModel(callID: callID, output: errorOutput)
+                                                self.receiveResponse()
+                                                return
+                                            }
+                                            handleExecuteKeystrokes(keystrokes: keystrokes, callID: callID)
                                         default:
                                             fatalError("Unknown function: \(functionName)")
                                         }
@@ -466,6 +500,38 @@ class OpenAIRealtimeAPI {
         // Send function output back to model
         let output = "Prompt sent to Claude"
         sendFunctionOutputToModel(callID: callID, output: output)
+    }
+    
+    // Handle the executeKeystrokes function call from the model
+    func handleExecuteKeystrokes(keystrokes: String, callID: String) {
+        print("Executing keystrokes: \(keystrokes)")
+        
+        do {
+            // Wrap the keystrokes in the complete AppleScript
+            let fullScript = """
+            tell application "Terminal"
+                activate
+                tell application "System Events"
+                    \(keystrokes)
+                end tell
+            end tell
+            """
+            
+            let process = Process()
+            process.launchPath = "/usr/bin/osascript"
+            process.arguments = ["-e", fullScript]
+            
+            try process.run()
+            process.waitUntilExit()
+            
+            print("Keystrokes executed successfully")
+            let output = "Keystrokes executed successfully"
+            sendFunctionOutputToModel(callID: callID, output: output)
+        } catch {
+            print("Error executing keystrokes: \(error)")
+            let output = "Error executing keystrokes: \(error.localizedDescription)"
+            sendFunctionOutputToModel(callID: callID, output: output)
+        }
     }
     
     // Helper method to send function call outputs back to the model
