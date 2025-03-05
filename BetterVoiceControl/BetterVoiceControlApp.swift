@@ -395,42 +395,45 @@ class OpenAIRealtimeAPI {
         }
     }
     
-    func sendCommandToClaudeTerminal(_ command: String) {
-
+    func sendCommandToClaudeTerminal(_ command: String) throws {
+        print("Preparing to inject command into active terminal...")
         
-        do {
-            print("Preparing to inject command into active terminal...")
-            
-            // Use AppleScript to send the command to the active Terminal window
-            let escapedCommand = command.replacingOccurrences(of: "\\", with: "\\\\")
-                                       .replacingOccurrences(of: "\"", with: "\\\"")
-                                       .replacingOccurrences(of: "'", with: "\\'")
-            
-            let script = """
-            tell application "Terminal"
-                activate
+        // Use AppleScript to send the command to the active Terminal window
+        let escapedCommand = command.replacingOccurrences(of: "\\", with: "\\\\")
+                                   .replacingOccurrences(of: "\"", with: "\\\"")
+                                   .replacingOccurrences(of: "'", with: "\\'")
+        
+        let script = """
+        tell application "Terminal"
+            activate
+            delay 0.5
+            tell application "System Events"
+                keystroke "\(escapedCommand)"
                 delay 0.5
-                tell application "System Events"
-                    keystroke "\(escapedCommand)"
-                    delay 0.5
-                    keystroke return
-                end tell
+                keystroke return
             end tell
-            """
-            
-            let process = Process()
-            process.launchPath = "/usr/bin/osascript"
-            process.arguments = ["-e", script]
-            
-            try process.run()
-            process.waitUntilExit()
-            
-            print("Command sent to terminal: \(command)")
-            // Clear the prompt after sending
-            appState.updateCurrentPrompt("")
-        } catch {
-            print("Error sending command via AppleScript: \(error)")
+        end tell
+        """
+        
+        let process = Process()
+        process.launchPath = "/usr/bin/osascript"
+        process.arguments = ["-e", script]
+        
+        try process.run()
+        process.waitUntilExit()
+        
+        // Check if the process exited successfully
+        if process.terminationStatus != 0 {
+            throw NSError(
+                domain: "AppleScriptError",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "AppleScript execution failed with exit code: \(process.terminationStatus)"]
+            )
         }
+        
+        print("Command sent to terminal: \(command)")
+        // Clear the prompt after sending
+        appState.updateCurrentPrompt("")
     }
     
     // Handle the editPrompt function call from the model
@@ -456,11 +459,18 @@ class OpenAIRealtimeAPI {
         print("Sending prompt to Claude: \(appState.currentPrompt)")
         
         // Send the prompt directly to the terminal
-        sendCommandToClaudeTerminal(appState.currentPrompt)
-        
-        // Send function output back to model
-        let output = "Prompt sent to Claude"
-        sendFunctionOutputToModel(callID: callID, output: output)
+        do {
+            try sendCommandToClaudeTerminal(appState.currentPrompt)
+            
+            // Send success feedback to model
+            let output = "Prompt sent to Claude"
+            sendFunctionOutputToModel(callID: callID, output: output)
+        } catch {
+            // Send error feedback to model
+            let errorOutput = "Error: \(error.localizedDescription)"
+            sendFunctionOutputToModel(callID: callID, output: errorOutput)
+            print("Error passed back to model: \(error)")
+        }
     }
     
     // Handle the executeKeystrokes function call from the model
