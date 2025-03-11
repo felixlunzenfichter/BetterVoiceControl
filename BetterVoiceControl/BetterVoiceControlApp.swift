@@ -259,7 +259,14 @@ class OpenAIRealtimeAPI {
             "parameters": emptyParams
         ]
         
-        let tools = [editPromptFunction, sendPromptFunction, updateTranscriptionFunction, acceptFunction, rejectFunction, arrowUpFunction, arrowDownFunction, escapeFunction]
+        let clearFunction: [String: Any] = [
+            "type": "function",
+            "name": "clear",
+            "description": "Clears the current interface and resets the state. Triggered by keyword 'clear'.",
+            "parameters": emptyParams
+        ]
+        
+        let tools = [editPromptFunction, sendPromptFunction, updateTranscriptionFunction, acceptFunction, rejectFunction, arrowUpFunction, arrowDownFunction, escapeFunction, clearFunction]
         let session: [String: Any] = ["tools": tools]
         let functionPayload: [String: Any] = [
             "type": "session.update",
@@ -324,7 +331,6 @@ class OpenAIRealtimeAPI {
             switch result {
             case .failure(let error):
                 print("Error receiving audio response: \(error)")
-                // Try to reconnect or inform user
                 DispatchQueue.main.async {
                     self.appState.isRecording = false
                 }
@@ -403,6 +409,8 @@ class OpenAIRealtimeAPI {
                                             handleArrowDown(callID: callID)
                                         case "escape":
                                             handleEscape(callID: callID)
+                                        case "clear":
+                                            handleClear(callID: callID)
                                         default:
                                             fatalError("Unknown function: \(functionName)")
                                         }
@@ -501,7 +509,6 @@ class OpenAIRealtimeAPI {
         try process.run()
         process.waitUntilExit()
         
-        // Check if the process exited successfully
         if process.terminationStatus != 0 {
             throw NSError(
                 domain: "AppleScriptError",
@@ -511,7 +518,6 @@ class OpenAIRealtimeAPI {
         }
         
         print("Command sent to terminal: \(command)")
-        // Clear the prompt after sending
         appState.updateCurrentPrompt("")
     }
     
@@ -611,6 +617,16 @@ class OpenAIRealtimeAPI {
         executeKeystrokesInTerminal("key code 53 -- escape key", actionName: "escape", callID: callID)
     }
     
+    func handleClear(callID: String) {
+        let clearSequence = """
+        key code 53 -- escape key
+        delay 0.1
+        key code 53 -- escape key
+        """
+        
+        executeKeystrokesInTerminal(clearSequence, actionName: "clear", callID: callID)
+    }
+    
     func handleUpdateTranscription(text: String, callID: String) {
         print("Appending transcription: \(text)")
         
@@ -633,7 +649,6 @@ class OpenAIRealtimeAPI {
     }
 }
 
-// Audio Processing Functions
 func base64ToAudioBuffer(base64String: String, sampleRate: Double = 24000, channels: AVAudioChannelCount = 1) -> AVAudioPCMBuffer? {
     guard let pcmData = Data(base64Encoded: base64String) else {
         print("Error decoding base64 string")
