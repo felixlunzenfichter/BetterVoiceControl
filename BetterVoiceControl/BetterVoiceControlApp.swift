@@ -11,12 +11,26 @@ import Foundation
 class AppState: ObservableObject {
     @Published var isRecording: Bool = false
     @Published var currentPrompt: String = ""
+    @Published var transcription: String = ""
+    
     
     func updateCurrentPrompt(_ prompt: String) {
         DispatchQueue.main.async {
             self.currentPrompt = prompt
         }
     }
+    
+    
+    func updateTranscription(_ text: String) {
+        DispatchQueue.main.async {
+            if self.transcription.isEmpty {
+                self.transcription = text
+            } else {
+                self.transcription += "\n" + text
+            }
+        }
+    }
+    
 }
 
 @main
@@ -57,13 +71,37 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     
     var body: some View {
-        VStack {
-            Text(appState.isRecording ? "●" : "○")
+        VStack(spacing: 8) {
+            HStack {
+                Text(appState.isRecording ? "●" : "○")
+                    .font(.system(size: 18))
+                    .foregroundColor(appState.isRecording ? .red : .gray)
+                
+                Text("Transcription:")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             
-            if !appState.currentPrompt.isEmpty {
-                Text(appState.currentPrompt)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(appState.transcription.isEmpty ? "(No transcription yet)" : appState.transcription)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    Divider()
+                    
+                    Text("Prompt:")
+                        .font(.headline)
+                        .padding(.top, 4)
+                    
+                    Text(appState.currentPrompt.isEmpty ? "(No prompt yet)" : appState.currentPrompt)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
+        .padding(8)
+        .frame(minWidth: 700, minHeight: 500)
     }
 }
 
@@ -118,13 +156,12 @@ class OpenAIRealtimeAPI {
             "type": "session.update",
             "session": [
                 "instructions": INSTRUCTIONS,
-                "tool_choice": "required" // Force function calling only, disable automatic text responses
+                "tool_choice": "required"
             ]
         ])
     }
     
     func defineFunction() {
-        // Define the editPrompt function parameters
         let promptProperty: [String: String] = [
             "type": "string",
             "description": "The refined or new prompt to be displayed and eventually sent to Claude Code."
@@ -140,21 +177,32 @@ class OpenAIRealtimeAPI {
             "required": ["prompt"]
         ]
         
-        // Define the sendPrompt function parameters
         let sendPromptParams: [String: Any] = [
             "type": "object",
             "properties": [String: Any](),
             "required": [String]()
         ]
         
-        // No parameters needed for the keystroke functions
         let emptyParams: [String: Any] = [
             "type": "object",
             "properties": [String: Any](),
             "required": [String]()
         ]
         
-        // Create the function definitions
+        let transcriptionProperty: [String: String] = [
+            "type": "string",
+            "description": "The exact verbatim transcription of what the user said, word-for-word, without any added context or interpretation."
+        ]
+        
+        let transcriptionProperties: [String: [String: String]] = [
+            "text": transcriptionProperty
+        ]
+        
+        let transcriptionParams: [String: Any] = [
+            "type": "object", 
+            "properties": transcriptionProperties,
+            "required": ["text"]
+        ]
         let editPromptFunction: [String: Any] = [
             "type": "function",
             "name": "editPrompt",
@@ -167,6 +215,13 @@ class OpenAIRealtimeAPI {
             "name": "sendPrompt",
             "description": "Transmits the final, refined prompt to the Claude Code coding agent for execution.",
             "parameters": sendPromptParams
+        ]
+        
+        let updateTranscriptionFunction: [String: Any] = [
+            "type": "function",
+            "name": "updateTranscription",
+            "description": "Provides a verbatim, word-for-word transcription of exactly what the user said without adding any conversational context, interpretation, or modification.",
+            "parameters": transcriptionParams
         ]
         
         let acceptFunction: [String: Any] = [
@@ -204,8 +259,7 @@ class OpenAIRealtimeAPI {
             "parameters": emptyParams
         ]
         
-        // Create the complete payload
-        let tools = [editPromptFunction, sendPromptFunction, acceptFunction, rejectFunction, arrowUpFunction, arrowDownFunction, escapeFunction]
+        let tools = [editPromptFunction, sendPromptFunction, updateTranscriptionFunction, acceptFunction, rejectFunction, arrowUpFunction, arrowDownFunction, escapeFunction]
         let session: [String: Any] = ["tools": tools]
         let functionPayload: [String: Any] = [
             "type": "session.update",
@@ -316,7 +370,6 @@ class OpenAIRealtimeAPI {
                                        let argumentsString = item["arguments"] as? String,
                                        let argumentsData = argumentsString.data(using: .utf8) {
                                         
-                                        // Route to the appropriate function handler
                                         switch functionName {
                                         case "editPrompt":
                                             guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
@@ -328,6 +381,16 @@ class OpenAIRealtimeAPI {
                                                 return
                                             }
                                             handleEditPrompt(prompt: prompt, callID: callID)
+                                        case "updateTranscription":
+                                            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
+                                                  let text = argumentsDict["text"] as? String else {
+                                                print("Failed to parse updateTranscription arguments")
+                                                let errorOutput = "Error: Failed to parse the text argument"
+                                                sendFunctionOutputToModel(callID: callID, output: errorOutput)
+                                                self.receiveResponse()
+                                                return
+                                            }
+                                            handleUpdateTranscription(text: text, callID: callID)
                                         case "sendPrompt":
                                             handleSendPrompt(callID: callID)
                                         case "accept":
@@ -452,19 +515,15 @@ class OpenAIRealtimeAPI {
         appState.updateCurrentPrompt("")
     }
     
-    // Handle the editPrompt function call from the model
     func handleEditPrompt(prompt: String, callID: String) {
         print("Updating prompt: \(prompt)")
         
-        // Update the prompt in the AppState
         appState.updateCurrentPrompt(prompt)
         
-        // Send function output back to model
         let output = "Prompt updated successfully"
         sendFunctionOutputToModel(callID: callID, output: output)
     }
     
-    // Handle the sendPrompt function call from the model
     func handleSendPrompt(callID: String) {
         if appState.currentPrompt.isEmpty {
             let output = "Error: No prompt available to send"
@@ -474,27 +533,22 @@ class OpenAIRealtimeAPI {
         
         print("Sending prompt to Claude: \(appState.currentPrompt)")
         
-        // Send the prompt directly to the terminal
         do {
             try sendCommandToClaudeTerminal(appState.currentPrompt)
             
-            // Send success feedback to model
             let output = "Prompt sent to Claude"
             sendFunctionOutputToModel(callID: callID, output: output)
         } catch {
-            // Send error feedback to model
             let errorOutput = "Error sending the prompt to Claude Code: \(error.localizedDescription)"
             sendFunctionOutputToModel(callID: callID, output: errorOutput)
             print("Error passed back to model: \(error)")
         }
     }
     
-    // Helper method to execute keystrokes using AppleScript - handles all error management
     private func executeKeystrokesInTerminal(_ keystrokeCommands: String, actionName: String, callID: String) {
         print("Executing \(actionName) keystrokes")
         
         do {
-            // Wrap the keystrokes in the complete AppleScript
             let fullScript = """
             tell application "Terminal"
                 activate
@@ -529,12 +583,10 @@ class OpenAIRealtimeAPI {
         }
     }
     
-    // Function to handle accept (return key press)
     func handleAccept(callID: String) {
         executeKeystrokesInTerminal("key code 36 -- return/enter key", actionName: "accept", callID: callID)
     }
     
-    // Function to handle reject (down arrow twice then enter)
     func handleReject(callID: String) {
         let rejectSequence = """
         key code 125 -- down arrow
@@ -547,22 +599,26 @@ class OpenAIRealtimeAPI {
         executeKeystrokesInTerminal(rejectSequence, actionName: "reject", callID: callID)
     }
     
-    // Function to handle arrow up
     func handleArrowUp(callID: String) {
         executeKeystrokesInTerminal("key code 126 -- up arrow key", actionName: "arrow up", callID: callID)
     }
     
-    // Function to handle arrow down
     func handleArrowDown(callID: String) {
         executeKeystrokesInTerminal("key code 125 -- down arrow key", actionName: "arrow down", callID: callID)
     }
     
-    // Function to handle escape
     func handleEscape(callID: String) {
         executeKeystrokesInTerminal("key code 53 -- escape key", actionName: "escape", callID: callID)
     }
     
-    // Helper method to send function call outputs back to the model
+    func handleUpdateTranscription(text: String, callID: String) {
+        print("Appending transcription: \(text)")
+        
+        appState.updateTranscription(text)
+        
+        let output = "Transcription appended"
+        sendFunctionOutputToModel(callID: callID, output: output)
+    }
     func sendFunctionOutputToModel(callID: String, output: String) {
         let payload: [String: Any] = [
             "type": "conversation.item.create",
@@ -610,21 +666,18 @@ func pcm16ToFloat32(pcmData: Data) -> [Float] {
 }
 
 
-// Build a complete list of problematic characters
 let problematicCharacters: [Character] = {
     var chars = [Character]()
-    // Include all ASCII control characters (U+0000 to U+001F)
     for code in 0..<32 {
         if let scalar = UnicodeScalar(code) {
             chars.append(Character(scalar))
         }
     }
- chars.append("\"")
+    chars.append("\"")
     chars.append("\\")
     return chars
 }()
 
-// Function that escapes all problematic characters for AppleScript
 extension String {
     func escapeForAppleScript() -> String {
         var escaped = self
@@ -632,13 +685,10 @@ extension String {
             let replacement: String
             switch char {
             case "\"":
-                // AppleScript escapes double quotes by doubling them
                 replacement = "\"\""
             case "\\":
-                // Escape backslashes by doubling them
                 replacement = "\\\\"
             default:
-                // Escape control characters as Unicode escape sequences
                 let code = char.unicodeScalars.first!.value
                 replacement = String(format: "\\u{%02X}", code)
             }
