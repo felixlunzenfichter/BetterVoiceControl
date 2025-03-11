@@ -1,5 +1,5 @@
 let INSTRUCTIONS = """
-Your task is to be a prompt generator in a coding application designed for hands-free computing. Listen to the user’s voice input, interpret it carefully, and transform it into a clear, context-rich natural language prompt targeted at a coding agent called Claude Code. Apply optimal prompt engineering techniques to refine the user’s instructions before sending the final prompt to Claude Code for execution.
+Your task is to be a prompt generator in a coding application designed for hands-free computing. Listen to the user’s voice input, interpret it carefully, and transform it into a clear, context-rich natural language prompt targeted at a coding agent called Claude Code. Apply optimal prompt engineering techniques to refine the user’s instructions before sending the final prompt to Claude Code for execution. Don't leave anything out and don't add anything that hasn't been mentioned. Just optimize the structure.
 """
 
 import SwiftUI
@@ -117,7 +117,8 @@ class OpenAIRealtimeAPI {
         send([
             "type": "session.update",
             "session": [
-                "instructions": INSTRUCTIONS
+                "instructions": INSTRUCTIONS,
+                "tool_choice": "required" // Force function calling only, disable automatic text responses
             ]
         ])
     }
@@ -146,20 +147,11 @@ class OpenAIRealtimeAPI {
             "required": [String]()
         ]
         
-        // Define the executeKeystrokes function parameters
-        let keystrokesProperty: [String: String] = [
-            "type": "string",
-            "description": "AppleScript keystroke commands to execute in Terminal. IMPORTANT: For 'decline', use the special sequence: 'key code 125 -- down\\ndelay 0.1\\nkey code 125 -- down\\ndelay 0.1\\nkey code 36 -- enter'. For other commands, use standard AppleScript key codes like 'key code 36' (enter), 'key code 53' (escape). Commands will be inserted into: tell application \"Terminal\"\\nactivate\\ntell application \"System Events\"\\n[YOUR COMMANDS HERE]\\nend tell\\nend tell"
-        ]
-        
-        let executeKeystrokesProperties: [String: [String: String]] = [
-            "keystrokes": keystrokesProperty
-        ]
-        
-        let executeKeystrokesParams: [String: Any] = [
+        // No parameters needed for the keystroke functions
+        let emptyParams: [String: Any] = [
             "type": "object",
-            "properties": executeKeystrokesProperties,
-            "required": ["keystrokes"]
+            "properties": [String: Any](),
+            "required": [String]()
         ]
         
         // Create the function definitions
@@ -177,15 +169,43 @@ class OpenAIRealtimeAPI {
             "parameters": sendPromptParams
         ]
         
-        let executeKeystrokesFunction: [String: Any] = [
+        let acceptFunction: [String: Any] = [
             "type": "function",
-            "name": "executeKeystrokes",
-            "description": "Executes AppleScript keystroke commands in Terminal for controlling Claude Code CLI. Use this for terminal navigation - specifically for 'decline' which requires a special sequence of keystrokes.",
-            "parameters": executeKeystrokesParams
+            "name": "accept",
+            "description": "Executes a return/enter key press in Terminal for accepting current action in Claude Code CLI. Triggered by keyword 'accept'.",
+            "parameters": emptyParams
+        ]
+        
+        let rejectFunction: [String: Any] = [
+            "type": "function",
+            "name": "reject",
+            "description": "Executes a sequence for rejecting current action in Claude Code CLI. Triggered by keyword 'reject'.",
+            "parameters": emptyParams
+        ]
+        
+        let arrowUpFunction: [String: Any] = [
+            "type": "function",
+            "name": "arrowUp",
+            "description": "Executes an up arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow up'.",
+            "parameters": emptyParams
+        ]
+        
+        let arrowDownFunction: [String: Any] = [
+            "type": "function",
+            "name": "arrowDown",
+            "description": "Executes a down arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow down'.",
+            "parameters": emptyParams
+        ]
+        
+        let escapeFunction: [String: Any] = [
+            "type": "function",
+            "name": "escape",
+            "description": "Executes an escape key press in Terminal for canceling actions in Claude Code CLI. Triggered by keyword 'escape'.",
+            "parameters": emptyParams
         ]
         
         // Create the complete payload
-        let tools = [editPromptFunction, sendPromptFunction, executeKeystrokesFunction]
+        let tools = [editPromptFunction, sendPromptFunction, acceptFunction, rejectFunction, arrowUpFunction, arrowDownFunction, escapeFunction]
         let session: [String: Any] = ["tools": tools]
         let functionPayload: [String: Any] = [
             "type": "session.update",
@@ -310,16 +330,16 @@ class OpenAIRealtimeAPI {
                                             handleEditPrompt(prompt: prompt, callID: callID)
                                         case "sendPrompt":
                                             handleSendPrompt(callID: callID)
-                                        case "executeKeystrokes":
-                                            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
-                                                  let keystrokes = argumentsDict["keystrokes"] as? String else {
-                                                print("Failed to parse executeKeystrokes arguments")
-                                                let errorOutput = "Error: Failed to parse the keystrokes argument"
-                                                sendFunctionOutputToModel(callID: callID, output: errorOutput)
-                                                self.receiveResponse()
-                                                return
-                                            }
-                                            handleExecuteKeystrokes(keystrokes: keystrokes, callID: callID)
+                                        case "accept":
+                                            handleAccept(callID: callID)
+                                        case "reject":
+                                            handleReject(callID: callID)
+                                        case "arrowUp":
+                                            handleArrowUp(callID: callID)
+                                        case "arrowDown":
+                                            handleArrowDown(callID: callID)
+                                        case "escape":
+                                            handleEscape(callID: callID)
                                         default:
                                             fatalError("Unknown function: \(functionName)")
                                         }
@@ -398,17 +418,13 @@ class OpenAIRealtimeAPI {
     func sendCommandToClaudeTerminal(_ command: String) throws {
         print("Preparing to inject command into active terminal...")
         
-        // Use AppleScript to send the command to the active Terminal window
-        let escapedCommand = command.replacingOccurrences(of: "\\", with: "\\\\")
-                                   .replacingOccurrences(of: "\"", with: "\\\"")
-                                   .replacingOccurrences(of: "'", with: "\\'")
         
         let script = """
         tell application "Terminal"
             activate
             delay 0.5
             tell application "System Events"
-                keystroke "\(escapedCommand)"
+                keystroke "\(command.escapeForAppleScript())"
                 delay 0.5
                 keystroke return
             end tell
@@ -467,15 +483,15 @@ class OpenAIRealtimeAPI {
             sendFunctionOutputToModel(callID: callID, output: output)
         } catch {
             // Send error feedback to model
-            let errorOutput = "Error: \(error.localizedDescription)"
+            let errorOutput = "Error sending the prompt to Claude Code: \(error.localizedDescription)"
             sendFunctionOutputToModel(callID: callID, output: errorOutput)
             print("Error passed back to model: \(error)")
         }
     }
     
-    // Handle the executeKeystrokes function call from the model
-    func handleExecuteKeystrokes(keystrokes: String, callID: String) {
-        print("Executing keystrokes: \(keystrokes)")
+    // Helper method to execute keystrokes using AppleScript - handles all error management
+    private func executeKeystrokesInTerminal(_ keystrokeCommands: String, actionName: String, callID: String) {
+        print("Executing \(actionName) keystrokes")
         
         do {
             // Wrap the keystrokes in the complete AppleScript
@@ -483,7 +499,7 @@ class OpenAIRealtimeAPI {
             tell application "Terminal"
                 activate
                 tell application "System Events"
-                    \(keystrokes)
+                    \(keystrokeCommands)
                 end tell
             end tell
             """
@@ -495,14 +511,55 @@ class OpenAIRealtimeAPI {
             try process.run()
             process.waitUntilExit()
             
-            print("Keystrokes executed successfully")
-            let output = "Keystrokes executed successfully"
+            if process.terminationStatus != 0 {
+                throw NSError(
+                    domain: "AppleScriptError",
+                    code: Int(process.terminationStatus),
+                    userInfo: [NSLocalizedDescriptionKey: "AppleScript execution failed with exit code: \(process.terminationStatus)"]
+                )
+            }
+            
+            print("\(actionName) keystrokes executed successfully")
+            let output = "\(actionName) command executed successfully"
             sendFunctionOutputToModel(callID: callID, output: output)
         } catch {
-            print("Error executing keystrokes: \(error)")
-            let output = "Error executing keystrokes: \(error.localizedDescription)"
+            print("Error executing \(actionName) command: \(error)")
+            let output = "Error executing \(actionName) command: \(error.localizedDescription)"
             sendFunctionOutputToModel(callID: callID, output: output)
         }
+    }
+    
+    // Function to handle accept (return key press)
+    func handleAccept(callID: String) {
+        executeKeystrokesInTerminal("key code 36 -- return/enter key", actionName: "accept", callID: callID)
+    }
+    
+    // Function to handle reject (down arrow twice then enter)
+    func handleReject(callID: String) {
+        let rejectSequence = """
+        key code 125 -- down arrow
+        delay 0.1
+        key code 125 -- down arrow
+        delay 0.1
+        key code 36 -- return/enter key
+        """
+        
+        executeKeystrokesInTerminal(rejectSequence, actionName: "reject", callID: callID)
+    }
+    
+    // Function to handle arrow up
+    func handleArrowUp(callID: String) {
+        executeKeystrokesInTerminal("key code 126 -- up arrow key", actionName: "arrow up", callID: callID)
+    }
+    
+    // Function to handle arrow down
+    func handleArrowDown(callID: String) {
+        executeKeystrokesInTerminal("key code 125 -- down arrow key", actionName: "arrow down", callID: callID)
+    }
+    
+    // Function to handle escape
+    func handleEscape(callID: String) {
+        executeKeystrokesInTerminal("key code 53 -- escape key", actionName: "escape", callID: callID)
     }
     
     // Helper method to send function call outputs back to the model
@@ -549,5 +606,44 @@ func pcm16ToFloat32(pcmData: Data) -> [Float] {
         let ptr = rawBuffer.baseAddress!.assumingMemoryBound(to: Int16.self)
         let count = pcmData.count / MemoryLayout<Int16>.size
         return (0..<count).map { Float(ptr[$0]) / 32768.0 }
+    }
+}
+
+
+// Build a complete list of problematic characters
+let problematicCharacters: [Character] = {
+    var chars = [Character]()
+    // Include all ASCII control characters (U+0000 to U+001F)
+    for code in 0..<32 {
+        if let scalar = UnicodeScalar(code) {
+            chars.append(Character(scalar))
+        }
+    }
+ chars.append("\"")
+    chars.append("\\")
+    return chars
+}()
+
+// Function that escapes all problematic characters for AppleScript
+extension String {
+    func escapeForAppleScript() -> String {
+        var escaped = self
+        for char in problematicCharacters {
+            let replacement: String
+            switch char {
+            case "\"":
+                // AppleScript escapes double quotes by doubling them
+                replacement = "\"\""
+            case "\\":
+                // Escape backslashes by doubling them
+                replacement = "\\\\"
+            default:
+                // Escape control characters as Unicode escape sequences
+                let code = char.unicodeScalars.first!.value
+                replacement = String(format: "\\u{%02X}", code)
+            }
+            escaped = escaped.replacingOccurrences(of: String(char), with: replacement)
+        }
+        return escaped
     }
 }

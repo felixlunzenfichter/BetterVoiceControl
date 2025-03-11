@@ -7,5 +7,7 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>BetterVoiceControl needs microphone access to capture voice commands for hands-free operation.</string>
 </dict>
-</plist> 
+</plist>
