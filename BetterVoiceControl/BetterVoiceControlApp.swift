@@ -1,4 +1,4 @@
-let INSTRUCTIONS = """
+ let INSTRUCTIONS = """
 Your task is to be a prompt generator in a coding application designed for hands-free computing. Listen to the user’s voice input, interpret it carefully, and transform it into a clear, context-rich natural language prompt targeted at a coding agent called Claude Code. Apply optimal prompt engineering techniques to refine the user’s instructions before sending the final prompt to Claude Code for execution. Don't leave anything out and don't add anything that hasn't been mentioned. Just optimize the structure.
 """
 
@@ -118,7 +118,7 @@ class OpenAIRealtimeAPI {
     
     func connect() {
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
-        let urlString = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01"
+        let urlString = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
         
         guard let url = URL(string: urlString) else {
             print("Invalid URL.")
