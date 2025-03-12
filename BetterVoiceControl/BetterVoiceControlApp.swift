@@ -1,5 +1,24 @@
- let INSTRUCTIONS = """
-Your task is to be a prompt generator in a coding application designed for hands-free computing. Listen to the user’s voice input, interpret it carefully, and transform it into a clear, context-rich natural language prompt targeted at a coding agent called Claude Code. Apply optimal prompt engineering techniques to refine the user’s instructions before sending the final prompt to Claude Code for execution. Don't leave anything out and don't add anything that hasn't been mentioned. Just optimize the structure.
+// Instructions for Responses API - handles Computer Use tool
+let RESPONSES_INSTRUCTIONS = """
+You are an assistive computer agent for people who cannot use a computer with their hands, such as individuals with paraplegia or other mobility impairments. Your purpose is to enable full computer control using only voice commands.
+
+The workflow is:
+1. You receive transcribed voice input from the user
+2. You transform this into a clear, actionable prompt
+3. When the user confirms, you use the Computer Use tool to directly execute actions on their Mac
+
+Your role is to:
+- Interpret user intent accurately from transcriptions
+- Format instructions into clear, precise commands for the Computer Use tool
+- Provide feedback about what actions will be taken
+- Only execute commands when the user is ready
+
+Remember that the user depends on you for all computer interactions. Be responsive, precise, and helpful in enabling them to accomplish any computer task through voice alone.
+"""
+
+// Instructions for Realtime API - only handles transcription
+let REALTIME_INSTRUCTIONS = """
+Your task is to provide accurate real-time transcription of the user's voice input. Simply transcribe exactly what the user says verbatim, without adding any interpretation, context, or modifications. Call the updateTranscription function with the exact text the user spoke.
 """
 
 import SwiftUI
@@ -38,12 +57,14 @@ class AppState: ObservableObject {
 @main
 struct VoiceControlledMacApp: App {
     @StateObject private var appState = AppState()
-    let api: OpenAIRealtimeAPI
+    let realtimeAPI: OpenAIRealtimeAPI
+    let responsesAPI: OpenAIResponsesAPI
     
     init() {
         let appState = AppState()
         self._appState = StateObject(wrappedValue: appState)
-        self.api = OpenAIRealtimeAPI(appState: appState)
+        self.realtimeAPI = OpenAIRealtimeAPI(appState: appState)
+        self.responsesAPI = OpenAIResponsesAPI(appState: appState)
         
         requestMicrophonePermissions()
     }
@@ -53,7 +74,8 @@ struct VoiceControlledMacApp: App {
             ContentView()
                 .environmentObject(appState)
                 .onAppear {
-                    api.connect()
+                    realtimeAPI.connect()
+                    responsesAPI.setup()
                 }
         }
     }
@@ -130,11 +152,24 @@ struct ContentView: View {
     }
 }
 
+class OpenAIResponsesAPI {
+    private let appState: AppState
+    
+    init(appState: AppState) {
+        self.appState = appState
+    }
+    
+    func setup() {
+        // API setup and function call handling will be implemented here
+    }
+    
+    // Implementation for Responses API will be added here
+}
+
 class OpenAIRealtimeAPI {
     private var webSocketTask: URLSessionWebSocketTask?
     private let audioEngine = AVAudioEngine()
     private let dispatchQueue = DispatchQueue(label: "com.openai.realtimeapi")
-    private let audioPlayer = AVAudioPlayerNode()
     private var appState: AppState
     
     init(appState: AppState) {
@@ -177,10 +212,11 @@ class OpenAIRealtimeAPI {
     }
     
     func setInstructions() {
+        // Update to use the new transcription-focused instructions
         send([
             "type": "session.update",
             "session": [
-                "instructions": INSTRUCTIONS,
+                "instructions": REALTIME_INSTRUCTIONS,
                 "tool_choice": "required"
             ]
         ])
@@ -306,7 +342,6 @@ class OpenAIRealtimeAPI {
         
         let inputFormat = inputNode.inputFormat(forBus: 0)
         print(inputFormat)
-        audioEngine.attach(audioPlayer)
         let desiredSampleRate: Double = 24000.0
         
         let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: desiredSampleRate, channels: 1, interleaved: true)!
@@ -314,9 +349,7 @@ class OpenAIRealtimeAPI {
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: audioFormat) { buffer, time in
             self.sendAudioChunk(buffer: buffer)
         }
-        let playbackFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: desiredSampleRate, channels: 1, interleaved: false)!
         
-        audioEngine.connect(audioPlayer, to: audioEngine.mainMixerNode, format: playbackFormat)
         audioEngine.prepare()
         
         do {
@@ -404,11 +437,6 @@ class OpenAIRealtimeAPI {
                 captureTranscript(transcript)
             }
             
-        case "response.audio.delta":
-            if let delta = json["delta"] as? String {
-                playReceivedAudio(base64String: delta)
-            }
-            
         case "error":
             print("Error event: \(json)")
             
@@ -442,7 +470,6 @@ class OpenAIRealtimeAPI {
         DispatchQueue.main.async {
             self.appState.isRecording = true
         }
-        stopAudioPlayback()
     }
     
     private func handleSpeechEnded() {
@@ -507,16 +534,6 @@ class OpenAIRealtimeAPI {
         }
         
         switch functionName {
-        case "editPrompt":
-            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
-                  let prompt = argumentsDict["prompt"] as? String else {
-                print("Failed to parse editPrompt arguments")
-                let errorOutput = "Error: Failed to parse the prompt argument"
-                sendFunctionOutputToModel(callID: callID, output: errorOutput)
-                return
-            }
-            handleEditPrompt(prompt: prompt, callID: callID)
-            
         case "updateTranscription":
             guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
                   let text = argumentsDict["text"] as? String else {
@@ -527,208 +544,9 @@ class OpenAIRealtimeAPI {
             }
             handleUpdateTranscription(text: text, callID: callID)
             
-        case "sendPrompt":
-            handleSendPrompt(callID: callID)
-            
-        case "accept":
-            handleAccept(callID: callID)
-            
-        case "reject":
-            handleReject(callID: callID)
-            
-        case "arrowUp":
-            handleArrowUp(callID: callID)
-            
-        case "arrowDown":
-            handleArrowDown(callID: callID)
-            
-        case "escape":
-            handleEscape(callID: callID)
-            
-        case "clear":
-            handleClear(callID: callID)
-            
         default:
             print("Unknown function: \(functionName)")
         }
-    }
-    
-    func stopAudioPlayback() {
-        dispatchQueue.async {
-            if self.audioPlayer.isPlaying {
-                self.audioPlayer.stop()
-                print("Audio playback stopped and buffers cleared.")
-            }
-        }
-    }
-
-    func playReceivedAudio(base64String: String) {
-        guard let audioBuffer = base64ToAudioBuffer(base64String: base64String) else {
-            print("Failed to create audio buffer.")
-            return
-        }
-        
-        dispatchQueue.async {
-            if !self.audioEngine.isRunning {
-                do {
-                    try self.audioEngine.start()
-                    print("Playback engine restarted.")
-                } catch {
-                    print("Playback engine couldn't start: \(error)")
-                    return
-                }
-            }
-            
-            self.audioPlayer.scheduleBuffer(audioBuffer, at: nil, options: [], completionHandler: nil)
-            
-            if !self.audioPlayer.isPlaying {
-                self.audioPlayer.play()
-                print("Audio playback started.")
-            }
-        }
-    }
-    
-    func sendCommandToClaudeTerminal(_ command: String) throws {
-        print("Preparing to inject command into active terminal...")
-        
-        
-        let script = """
-        tell application "Terminal"
-            activate
-            delay 0.5
-            tell application "System Events"
-                keystroke "\(command.escapeForAppleScript())"
-                delay 0.5
-                keystroke return
-            end tell
-        end tell
-        """
-        
-        let process = Process()
-        process.launchPath = "/usr/bin/osascript"
-        process.arguments = ["-e", script]
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        if process.terminationStatus != 0 {
-            throw NSError(
-                domain: "AppleScriptError",
-                code: Int(process.terminationStatus),
-                userInfo: [NSLocalizedDescriptionKey: "AppleScript execution failed with exit code: \(process.terminationStatus)"]
-            )
-        }
-        
-        print("Command sent to terminal: \(command)")
-        appState.updateCurrentPrompt("")
-    }
-    
-    func handleEditPrompt(prompt: String, callID: String) {
-        print("Updating prompt: \(prompt)")
-        
-        appState.updateCurrentPrompt(prompt)
-        
-        let output = "Prompt updated successfully"
-        sendFunctionOutputToModel(callID: callID, output: output)
-    }
-    
-    func handleSendPrompt(callID: String) {
-        if appState.currentPrompt.isEmpty {
-            let output = "Error: No prompt available to send"
-            sendFunctionOutputToModel(callID: callID, output: output)
-            return
-        }
-        
-        print("Sending prompt to Claude: \(appState.currentPrompt)")
-        
-        do {
-            try sendCommandToClaudeTerminal(appState.currentPrompt)
-            
-            let output = "Prompt sent to Claude"
-            sendFunctionOutputToModel(callID: callID, output: output)
-        } catch {
-            let errorOutput = "Error sending the prompt to Claude Code: \(error.localizedDescription)"
-            sendFunctionOutputToModel(callID: callID, output: errorOutput)
-            print("Error passed back to model: \(error)")
-        }
-    }
-    
-    private func executeKeystrokesInTerminal(_ keystrokeCommands: String, actionName: String, callID: String) {
-        print("Executing \(actionName) keystrokes")
-        
-        do {
-            let fullScript = """
-            tell application "Terminal"
-                activate
-                tell application "System Events"
-                    \(keystrokeCommands)
-                end tell
-            end tell
-            """
-            
-            let process = Process()
-            process.launchPath = "/usr/bin/osascript"
-            process.arguments = ["-e", fullScript]
-            
-            try process.run()
-            process.waitUntilExit()
-            
-            if process.terminationStatus != 0 {
-                throw NSError(
-                    domain: "AppleScriptError",
-                    code: Int(process.terminationStatus),
-                    userInfo: [NSLocalizedDescriptionKey: "AppleScript execution failed with exit code: \(process.terminationStatus)"]
-                )
-            }
-            
-            print("\(actionName) keystrokes executed successfully")
-            let output = "\(actionName) command executed successfully"
-            sendFunctionOutputToModel(callID: callID, output: output)
-        } catch {
-            print("Error executing \(actionName) command: \(error)")
-            let output = "Error executing \(actionName) command: \(error.localizedDescription)"
-            sendFunctionOutputToModel(callID: callID, output: output)
-        }
-    }
-    
-    func handleAccept(callID: String) {
-        executeKeystrokesInTerminal("key code 36 -- return/enter key", actionName: "accept", callID: callID)
-    }
-    
-    func handleReject(callID: String) {
-        let rejectSequence = """
-        key code 125 -- down arrow
-        delay 0.1
-        key code 125 -- down arrow
-        delay 0.1
-        key code 36 -- return/enter key
-        """
-        
-        executeKeystrokesInTerminal(rejectSequence, actionName: "reject", callID: callID)
-    }
-    
-    func handleArrowUp(callID: String) {
-        executeKeystrokesInTerminal("key code 126 -- up arrow key", actionName: "arrow up", callID: callID)
-    }
-    
-    func handleArrowDown(callID: String) {
-        executeKeystrokesInTerminal("key code 125 -- down arrow key", actionName: "arrow down", callID: callID)
-    }
-    
-    func handleEscape(callID: String) {
-        executeKeystrokesInTerminal("key code 53 -- escape key", actionName: "escape", callID: callID)
-    }
-    
-    func handleClear(callID: String) {
-        let clearSequence = """
-        key code 53 -- escape key
-        delay 0.1
-        key code 53 -- escape key
-        """
-        
-        appState.clearTranscriptions()
-        
-        executeKeystrokesInTerminal(clearSequence, actionName: "clear", callID: callID)
     }
     
     func handleUpdateTranscription(text: String, callID: String) {
@@ -736,7 +554,8 @@ class OpenAIRealtimeAPI {
         
         appState.appendTranscription(text)
         
-        considerGeneratingPromptWithO1()
+        // Post notification for the ResponsesAPI to process this transcription
+        NotificationCenter.default.post(name: Notification.Name("TranscriptionAdded"), object: nil)
         
         let output = "Transcription appended"
         sendFunctionOutputToModel(callID: callID, output: output)
@@ -755,66 +574,3 @@ class OpenAIRealtimeAPI {
     }
 }
 
-func base64ToAudioBuffer(base64String: String, sampleRate: Double = 24000, channels: AVAudioChannelCount = 1) -> AVAudioPCMBuffer? {
-    guard let pcmData = Data(base64Encoded: base64String) else {
-        print("Error decoding base64 string")
-        return nil
-    }
-    
-    let float32Data = pcm16ToFloat32(pcmData: pcmData)
-    let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: channels, interleaved: false)!
-    let frameCapacity = AVAudioFrameCount(float32Data.count)
-    
-    guard let audioBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
-        print("Error creating audio buffer")
-        return nil
-    }
-    
-    audioBuffer.frameLength = frameCapacity
-    for i in 0..<Int(audioBuffer.frameLength) {
-        audioBuffer.floatChannelData?.pointee[i] = float32Data[i]
-    }
-    
-    return audioBuffer
-}
-
-func pcm16ToFloat32(pcmData: Data) -> [Float] {
-    return pcmData.withUnsafeBytes { rawBuffer -> [Float] in
-        let ptr = rawBuffer.baseAddress!.assumingMemoryBound(to: Int16.self)
-        let count = pcmData.count / MemoryLayout<Int16>.size
-        return (0..<count).map { Float(ptr[$0]) / 32768.0 }
-    }
-}
-
-
-let problematicCharacters: [Character] = {
-    var chars = [Character]()
-    for code in 0..<32 {
-        if let scalar = UnicodeScalar(code) {
-            chars.append(Character(scalar))
-        }
-    }
-    chars.append("\"")
-    chars.append("\\")
-    return chars
-}()
-
-extension String {
-    func escapeForAppleScript() -> String {
-        var escaped = self
-        for char in problematicCharacters {
-            let replacement: String
-            switch char {
-            case "\"":
-                replacement = "\"\""
-            case "\\":
-                replacement = "\\\\"
-            default:
-                let code = char.unicodeScalars.first!.value
-                replacement = String(format: "\\u{%02X}", code)
-            }
-            escaped = escaped.replacingOccurrences(of: String(char), with: replacement)
-        }
-        return escaped
-    }
-}
