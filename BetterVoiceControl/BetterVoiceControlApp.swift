@@ -11,8 +11,8 @@ import Foundation
 class AppState: ObservableObject {
     @Published var isRecording: Bool = false
     @Published var currentPrompt: String = ""
-    @Published var transcription: String = ""
-    
+    @Published var transcriptionHistory: [String] = []
+    @Published var isProcessingPrompt: Bool = false
     
     func updateCurrentPrompt(_ prompt: String) {
         DispatchQueue.main.async {
@@ -20,17 +20,19 @@ class AppState: ObservableObject {
         }
     }
     
-    
-    func updateTranscription(_ text: String) {
+    func appendTranscription(_ text: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        
         DispatchQueue.main.async {
-            if self.transcription.isEmpty {
-                self.transcription = text
-            } else {
-                self.transcription += "\n" + text
-            }
+            self.transcriptionHistory.append(text)
         }
     }
     
+    func clearTranscriptions() {
+        DispatchQueue.main.async {
+            self.transcriptionHistory = []
+        }
+    }
 }
 
 @main
@@ -77,30 +79,53 @@ struct ContentView: View {
                     .font(.system(size: 18))
                     .foregroundColor(appState.isRecording ? .red : .gray)
                 
-                Text("Transcription:")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Recording")
+                    .font(.caption)
+                    .foregroundColor(appState.isRecording ? .red : .gray)
+                
+                Spacer()
+                
+                if appState.isProcessingPrompt {
+                    Text("Processing")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                    
+                    Text("●")
+                        .font(.system(size: 18))
+                        .foregroundColor(.blue)
+                }
             }
             
             ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(appState.transcription.isEmpty ? "(No transcription yet)" : appState.transcription)
-                        .font(.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Prompt:")
+                            .font(.headline)
+                        
+                        Text(appState.currentPrompt.isEmpty ? "(No prompt yet)" : appState.currentPrompt)
+                            .font(.body)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     
-                    Divider()
-                    
-                    Text("Prompt:")
-                        .font(.headline)
-                        .padding(.top, 4)
-                    
-                    Text(appState.currentPrompt.isEmpty ? "(No prompt yet)" : appState.currentPrompt)
-                        .font(.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if !appState.transcriptionHistory.isEmpty {
+                        Divider()
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Recent Transcriptions:")
+                                .font(.headline)
+                            
+                            ForEach(appState.transcriptionHistory.indices, id: \.self) { index in
+                                Text("\(index + 1). \(appState.transcriptionHistory[index])")
+                                    .font(.caption)
+                                    .padding(.vertical, 2)
+                            }
+                        }
+                    }
                 }
+                .padding(.vertical, 4)
             }
         }
-        .padding(8)
+        .padding(12)
         .frame(minWidth: 700, minHeight: 500)
     }
 }
@@ -328,126 +353,203 @@ class OpenAIRealtimeAPI {
     
     func receiveResponse() {
         webSocketTask?.receive { [self] result in
+            defer { self.receiveResponse() }
+            
             switch result {
             case .failure(let error):
                 print("Error receiving audio response: \(error)")
                 DispatchQueue.main.async {
                     self.appState.isRecording = false
                 }
+                return
+                
             case .success(let message):
-                switch message {
-                case .string(let text):
-                    if let data = text.data(using: .utf8) {
-                        do {
-                            guard let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
-                                print("Error: JSON is not of expected format.")
-                                self.receiveResponse()
-                                return
-                            }
-                            
-                            if let eventType = json["type"] as? String {
-                                switch eventType {
-                                case "response.done":
-                                    DispatchQueue.main.async {
-                                        self.appState.isRecording = false
-                                    }
-                                    if let response = json["response"] as? [String: Any],
-                                       let status = response["status"] as? String, status == "failed" {
-                                        print("Response failed: \(response["status_details"] ?? "Unknown error")")
-                                    }
-                                case "response.function_call_arguments.delta":
-                                    break
-                                case "response.function_call_arguments.done":
-                                    break
-                                case "input_audio_buffer.speech_started":
-                                    print("User started speaking.")
-                                    DispatchQueue.main.async {
-                                        self.appState.isRecording = true
-                                    }
-                                    stopAudioPlayback()
-                                case "input_audio_buffer.speech_ended":
-                                    print("User stopped speaking.")
-                                case "response.output_item.done":
-                                    guard let item = json["item"] as? [String: Any] else { break }
-                                    
-                                    if let type = item["type"] as? String, type == "function_call",
-                                       let callID = item["call_id"] as? String,
-                                       let functionName = item["name"] as? String,
-                                       let argumentsString = item["arguments"] as? String,
-                                       let argumentsData = argumentsString.data(using: .utf8) {
-                                        
-                                        switch functionName {
-                                        case "editPrompt":
-                                            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
-                                                  let prompt = argumentsDict["prompt"] as? String else {
-                                                print("Failed to parse editPrompt arguments")
-                                                let errorOutput = "Error: Failed to parse the prompt argument"
-                                                sendFunctionOutputToModel(callID: callID, output: errorOutput)
-                                                self.receiveResponse()
-                                                return
-                                            }
-                                            handleEditPrompt(prompt: prompt, callID: callID)
-                                        case "updateTranscription":
-                                            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
-                                                  let text = argumentsDict["text"] as? String else {
-                                                print("Failed to parse updateTranscription arguments")
-                                                let errorOutput = "Error: Failed to parse the text argument"
-                                                sendFunctionOutputToModel(callID: callID, output: errorOutput)
-                                                self.receiveResponse()
-                                                return
-                                            }
-                                            handleUpdateTranscription(text: text, callID: callID)
-                                        case "sendPrompt":
-                                            handleSendPrompt(callID: callID)
-                                        case "accept":
-                                            handleAccept(callID: callID)
-                                        case "reject":
-                                            handleReject(callID: callID)
-                                        case "arrowUp":
-                                            handleArrowUp(callID: callID)
-                                        case "arrowDown":
-                                            handleArrowDown(callID: callID)
-                                        case "escape":
-                                            handleEscape(callID: callID)
-                                        case "clear":
-                                            handleClear(callID: callID)
-                                        default:
-                                            fatalError("Unknown function: \(functionName)")
-                                        }
-                                    } else if let contentArray = item["content"] as? [[String: Any]],
-                                              let content = contentArray.first,
-                                              let transcript = content["transcript"] as? String {
-                                        print("[[Model Text Output]] \(transcript)")
-                                    }
-                                case "response.audio_transcript.delta":
-                                    break
-                                case "response.audio.delta":
-                                    if let delta = json["delta"] as? String {
-                                        playReceivedAudio(base64String: delta)
-                                    }
-                                case "conversation.item.created":
-                                    break
-                                case "error":
-                                    print("Error: \(json)")
-                                default:
-                                    // print("Unhandled event type: \(eventType)")
-                                    break
-                                }
-                            }
-                            self.receiveResponse()
-                        } catch {
-                            print("Error parsing JSON: \(error)")
-                            self.receiveResponse()
-                        }
+                guard case .string(let text) = message else {
+                    if case .data(let data) = message {
+                        print("Received data message of size: \(data.count) bytes.")
+                    } else {
+                        print("Unknown message type received.")
                     }
-                case .data(let data):
-                    print("Received data message of size: \(data.count) bytes.")
-                    self.receiveResponse()
-                @unknown default:
-                    print("Unknown message type received.")
-                    self.receiveResponse()
+                    return
+                }
+                
+                guard let data = text.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                      let eventType = json["type"] as? String else {
+                    print("Error: JSON is not of expected format.")
+                    return
+                }
+                
+                processEvent(eventType: eventType, json: json)
+            }
+        }
+    }
+    
+    private func processEvent(eventType: String, json: [String: Any]) {
+        switch eventType {
+        case "response.done":
+            handleResponseCompletion(json: json)
+            
+        case "input_audio_buffer.speech_started":
+            handleSpeechStarted()
+            
+        case "input_audio_buffer.speech_ended":
+            handleSpeechEnded()
+            
+        case "response.output_item.done":
+            handleOutputItemCompletion(json: json)
+            
+        case "response.audio_transcript.delta":
+            if let transcript = json["text"] as? String {
+                captureTranscript(transcript)
+            }
+            
+        case "response.audio.delta":
+            if let delta = json["delta"] as? String {
+                playReceivedAudio(base64String: delta)
+            }
+            
+        case "error":
+            print("Error event: \(json)")
+            
+        case "response.function_call_arguments.delta",
+             "response.function_call_arguments.done",
+             "conversation.item.created":
+            break
+            
+        default:
+            break
+        }
+    }
+    
+    private func handleResponseCompletion(json: [String: Any]) {
+        DispatchQueue.main.async {
+            self.appState.isProcessingPrompt = false
+        }
+        
+        if let response = json["response"] as? [String: Any],
+           let status = response["status"] as? String, status == "failed" {
+            print("Response failed: \(response["status_details"] ?? "Unknown error")")
+        }
+        
+        if !appState.transcriptionHistory.isEmpty {
+            considerGeneratingPromptWithO1()
+        }
+    }
+    
+    private func handleSpeechStarted() {
+        print("User started speaking.")
+        DispatchQueue.main.async {
+            self.appState.isRecording = true
+        }
+        stopAudioPlayback()
+    }
+    
+    private func handleSpeechEnded() {
+        print("User speech ended. Processing transcription...")
+    }
+    
+    private func captureTranscript(_ transcript: String) {
+        print("Transcript delta: \(transcript)")
+    }
+    
+    private func handleOutputItemCompletion(json: [String: Any]) {
+        guard let item = json["item"] as? [String: Any] else { return }
+        
+        if let type = item["type"] as? String, type == "function_call",
+           let callID = item["call_id"] as? String,
+           let functionName = item["name"] as? String,
+           let argumentsString = item["arguments"] as? String {
+            handleFunctionCall(functionName: functionName, 
+                             argumentsString: argumentsString, 
+                             callID: callID)
+        } else if let contentArray = item["content"] as? [[String: Any]],
+                  let content = contentArray.first,
+                  let transcript = content["transcript"] as? String {
+            print("Complete transcript: \(transcript)")
+            appState.appendTranscription(transcript)
+        }
+    }
+    
+    private func considerGeneratingPromptWithO1() {
+        guard !appState.isProcessingPrompt, !appState.transcriptionHistory.isEmpty else { return }
+        
+        DispatchQueue.main.async {
+            self.appState.isProcessingPrompt = true
+        }
+        
+        let context = appState.transcriptionHistory.joined(separator: "\n")
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.generatePromptWithO1(fromTranscriptions: context) { result in
+                DispatchQueue.main.async {
+                    self.appState.isProcessingPrompt = false
+                    
+                    switch result {
+                    case .success(let generatedPrompt):
+                        self.appState.updateCurrentPrompt(generatedPrompt)
+                    case .failure(let error):
+                        print("Error generating prompt with O1: \(error)")
+                    }
                 }
             }
+        }
+    }
+    
+    private func generatePromptWithO1(fromTranscriptions transcriptions: String, completion: @escaping (Result<String, Error>) -> Void) {
+        completion(.success(transcriptions))
+    }
+    
+    private func handleFunctionCall(functionName: String, argumentsString: String, callID: String) {
+        guard let argumentsData = argumentsString.data(using: .utf8) else {
+            print("Failed to convert arguments string to data")
+            return
+        }
+        
+        switch functionName {
+        case "editPrompt":
+            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
+                  let prompt = argumentsDict["prompt"] as? String else {
+                print("Failed to parse editPrompt arguments")
+                let errorOutput = "Error: Failed to parse the prompt argument"
+                sendFunctionOutputToModel(callID: callID, output: errorOutput)
+                return
+            }
+            handleEditPrompt(prompt: prompt, callID: callID)
+            
+        case "updateTranscription":
+            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
+                  let text = argumentsDict["text"] as? String else {
+                print("Failed to parse updateTranscription arguments")
+                let errorOutput = "Error: Failed to parse the text argument"
+                sendFunctionOutputToModel(callID: callID, output: errorOutput)
+                return
+            }
+            handleUpdateTranscription(text: text, callID: callID)
+            
+        case "sendPrompt":
+            handleSendPrompt(callID: callID)
+            
+        case "accept":
+            handleAccept(callID: callID)
+            
+        case "reject":
+            handleReject(callID: callID)
+            
+        case "arrowUp":
+            handleArrowUp(callID: callID)
+            
+        case "arrowDown":
+            handleArrowDown(callID: callID)
+            
+        case "escape":
+            handleEscape(callID: callID)
+            
+        case "clear":
+            handleClear(callID: callID)
+            
+        default:
+            print("Unknown function: \(functionName)")
         }
     }
     
@@ -624,13 +726,17 @@ class OpenAIRealtimeAPI {
         key code 53 -- escape key
         """
         
+        appState.clearTranscriptions()
+        
         executeKeystrokesInTerminal(clearSequence, actionName: "clear", callID: callID)
     }
     
     func handleUpdateTranscription(text: String, callID: String) {
         print("Appending transcription: \(text)")
         
-        appState.updateTranscription(text)
+        appState.appendTranscription(text)
+        
+        considerGeneratingPromptWithO1()
         
         let output = "Transcription appended"
         sendFunctionOutputToModel(callID: callID, output: output)
