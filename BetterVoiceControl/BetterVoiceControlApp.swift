@@ -223,33 +223,7 @@ class OpenAIRealtimeAPI {
     }
     
     func defineFunction() {
-        let promptProperty: [String: String] = [
-            "type": "string",
-            "description": "The refined or new prompt to be displayed and eventually sent to Claude Code."
-        ]
-        
-        let editPromptProperties: [String: [String: String]] = [
-            "prompt": promptProperty
-        ]
-        
-        let editPromptParams: [String: Any] = [
-            "type": "object", 
-            "properties": editPromptProperties,
-            "required": ["prompt"]
-        ]
-        
-        let sendPromptParams: [String: Any] = [
-            "type": "object",
-            "properties": [String: Any](),
-            "required": [String]()
-        ]
-        
-        let emptyParams: [String: Any] = [
-            "type": "object",
-            "properties": [String: Any](),
-            "required": [String]()
-        ]
-        
+        // For RealtimeAPI, we only need the transcription function
         let transcriptionProperty: [String: String] = [
             "type": "string",
             "description": "The exact verbatim transcription of what the user said, word-for-word, without any added context or interpretation."
@@ -264,19 +238,6 @@ class OpenAIRealtimeAPI {
             "properties": transcriptionProperties,
             "required": ["text"]
         ]
-        let editPromptFunction: [String: Any] = [
-            "type": "function",
-            "name": "editPrompt",
-            "description": "Refines or replaces the current prompt based on user input. The updated prompt is displayed on screen in real-time.",
-            "parameters": editPromptParams
-        ]
-        
-        let sendPromptFunction: [String: Any] = [
-            "type": "function",
-            "name": "sendPrompt",
-            "description": "Transmits the final, refined prompt to the Claude Code coding agent for execution.",
-            "parameters": sendPromptParams
-        ]
         
         let updateTranscriptionFunction: [String: Any] = [
             "type": "function",
@@ -285,49 +246,8 @@ class OpenAIRealtimeAPI {
             "parameters": transcriptionParams
         ]
         
-        let acceptFunction: [String: Any] = [
-            "type": "function",
-            "name": "accept",
-            "description": "Executes a return/enter key press in Terminal for accepting current action in Claude Code CLI. Triggered by keyword 'accept'.",
-            "parameters": emptyParams
-        ]
-        
-        let rejectFunction: [String: Any] = [
-            "type": "function",
-            "name": "reject",
-            "description": "Executes a sequence for rejecting current action in Claude Code CLI. Triggered by keyword 'reject'.",
-            "parameters": emptyParams
-        ]
-        
-        let arrowUpFunction: [String: Any] = [
-            "type": "function",
-            "name": "arrowUp",
-            "description": "Executes an up arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow up'.",
-            "parameters": emptyParams
-        ]
-        
-        let arrowDownFunction: [String: Any] = [
-            "type": "function",
-            "name": "arrowDown",
-            "description": "Executes a down arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow down'.",
-            "parameters": emptyParams
-        ]
-        
-        let escapeFunction: [String: Any] = [
-            "type": "function",
-            "name": "escape",
-            "description": "Executes an escape key press in Terminal for canceling actions in Claude Code CLI. Triggered by keyword 'escape'.",
-            "parameters": emptyParams
-        ]
-        
-        let clearFunction: [String: Any] = [
-            "type": "function",
-            "name": "clear",
-            "description": "Clears the current interface and resets the state. Triggered by keyword 'clear'.",
-            "parameters": emptyParams
-        ]
-        
-        let tools = [editPromptFunction, sendPromptFunction, updateTranscriptionFunction, acceptFunction, rejectFunction, arrowUpFunction, arrowDownFunction, escapeFunction, clearFunction]
+        // Define session with only the transcription function
+        let tools = [updateTranscriptionFunction]
         let session: [String: Any] = ["tools": tools]
         let functionPayload: [String: Any] = [
             "type": "session.update",
