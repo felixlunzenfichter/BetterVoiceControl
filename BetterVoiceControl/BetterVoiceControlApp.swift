@@ -1,22 +1,7 @@
-// Instructions for Responses API - handles Computer Use tool
 let RESPONSES_INSTRUCTIONS = """
-You are an assistive computer agent for people who cannot use a computer with their hands, such as individuals with paraplegia or other mobility impairments. Your purpose is to enable full computer control using only voice commands.
-
-The workflow is:
-1. You receive transcribed voice input from the user
-2. You transform this into a clear, actionable prompt
-3. When the user confirms, you use the Computer Use tool to directly execute actions on their Mac
-
-Your role is to:
-- Interpret user intent accurately from transcriptions
-- Format instructions into clear, precise commands for the Computer Use tool
-- Provide feedback about what actions will be taken
-- Only execute commands when the user is ready
-
-Remember that the user depends on you for all computer interactions. Be responsive, precise, and helpful in enabling them to accomplish any computer task through voice alone.
+Your task is to convert a real-time transcription into a prompt that can be executed by a computer agent. Don't add anything, don't leave anything out, and make sure the prompt is well-structured and follows best practices when it comes to prompt engineering.
 """
 
-// Instructions for Realtime API - only handles transcription
 let REALTIME_INSTRUCTIONS = """
 Your task is to provide accurate real-time transcription of the user's voice input. Simply transcribe exactly what the user says verbatim, without adding any interpretation, context, or modifications. Call the updateTranscription function with the exact text the user spoke.
 """
@@ -28,7 +13,6 @@ import AVFoundation
 import Foundation
 
 class AppState: ObservableObject {
-    @Published var isRecording: Bool = false
     @Published var currentPrompt: String = ""
     @Published var transcriptionHistory: [String] = []
     @Published var isProcessingPrompt: Bool = false
@@ -63,8 +47,9 @@ struct VoiceControlledMacApp: App {
     init() {
         let appState = AppState()
         self._appState = StateObject(wrappedValue: appState)
-        self.realtimeAPI = OpenAIRealtimeAPI(appState: appState)
-        self.responsesAPI = OpenAIResponsesAPI(appState: appState)
+        let responsesAPI = OpenAIResponsesAPI(appState: appState)
+        self.responsesAPI = responsesAPI
+        self.realtimeAPI = OpenAIRealtimeAPI(appState: appState, responsesAPI: responsesAPI)
         
         requestMicrophonePermissions()
     }
@@ -75,7 +60,6 @@ struct VoiceControlledMacApp: App {
                 .environmentObject(appState)
                 .onAppear {
                     realtimeAPI.connect()
-                    responsesAPI.setup()
                 }
         }
     }
@@ -97,16 +81,6 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                Text(appState.isRecording ? "●" : "○")
-                    .font(.system(size: 18))
-                    .foregroundColor(appState.isRecording ? .red : .gray)
-                
-                Text("Recording")
-                    .font(.caption)
-                    .foregroundColor(appState.isRecording ? .red : .gray)
-                
-                Spacer()
-                
                 if appState.isProcessingPrompt {
                     Text("Processing")
                         .font(.caption)
@@ -154,16 +128,107 @@ struct ContentView: View {
 
 class OpenAIResponsesAPI {
     private let appState: AppState
+    private let apiKey: String
     
     init(appState: AppState) {
         self.appState = appState
+        self.apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? ""
     }
     
-    func setup() {
-        // API setup and function call handling will be implemented here
+    
+    func generatePromptFromTranscriptions() {
+        guard !appState.transcriptionHistory.isEmpty else { return }
+        
+        let transcriptionText = appState.transcriptionHistory.joined(separator: " ")
+        callResponsesAPIForPromptGeneration(transcriptionText)
     }
     
-    // Implementation for Responses API will be added here
+    func callResponsesAPIForPromptGeneration(_ transcription: String) {
+        let url = URL(string: "https://api.openai.com/v1/responses")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        let generatePromptFunction: [String: Any] = [
+            "type": "function",
+            "name": "generate_prompt",
+            "description": "Generate a clean, structured prompt from user transcription",
+            "parameters": [
+                "type": "object",
+                "properties": [
+                    "prompt": [
+                        "type": "string",
+                        "description": "A clean, actionable prompt based on the user's transcription"
+                    ]
+                ],
+                "required": ["prompt"],
+                "additionalProperties": false
+            ]
+        ]
+        
+        let requestBody: [String: Any] = [
+            "model": "o1",
+            "input": [
+                ["role": "user", "content": "Convert this transcription to a clean prompt: \(transcription)"]
+            ],
+            "tools": [generatePromptFunction],
+            "tool_choice": "required"
+        ]
+        
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: requestBody) else {
+            print("Failed to create JSON data for request")
+            return
+        }
+        
+        request.httpBody = jsonData
+        
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                print("API request failed: \(error.localizedDescription)")
+                return
+            }
+            
+            guard let data = data else {
+                print("No data received from API")
+                return
+            }
+            
+            self.processPromptFunctionCallResponse(data)
+        }
+        
+        task.resume()
+    }
+    
+    private func processPromptFunctionCallResponse(_ data: Data) {
+        guard let jsonObject = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+              let output = jsonObject["output"] as? [[String: Any]] else {
+            print("Failed to parse response data")
+            return
+        }
+        
+        for item in output {
+            if let type = item["type"] as? String, type == "function_call",
+               let name = item["name"] as? String,
+               let arguments = item["arguments"] as? String {
+                
+                print("Function called: \(name)")
+                print("Arguments: \(arguments)")
+                
+                if let argumentsData = arguments.data(using: .utf8),
+                   let argumentsObject = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
+                   let generatedPrompt = argumentsObject["prompt"] as? String {
+                    
+                    DispatchQueue.main.async {
+                        self.appState.updateCurrentPrompt(generatedPrompt)
+                    }
+                    
+                    print("Generated prompt: \(generatedPrompt)")
+                }
+            }
+        }
+    }
 }
 
 class OpenAIRealtimeAPI {
@@ -171,9 +236,11 @@ class OpenAIRealtimeAPI {
     private let audioEngine = AVAudioEngine()
     private let dispatchQueue = DispatchQueue(label: "com.openai.realtimeapi")
     private var appState: AppState
+    private var responsesAPI: OpenAIResponsesAPI
     
-    init(appState: AppState) {
+    init(appState: AppState, responsesAPI: OpenAIResponsesAPI) {
         self.appState = appState
+        self.responsesAPI = responsesAPI
     }
     
     func connect() {
@@ -212,7 +279,6 @@ class OpenAIRealtimeAPI {
     }
     
     func setInstructions() {
-        // Update to use the new transcription-focused instructions
         send([
             "type": "session.update",
             "session": [
@@ -223,7 +289,6 @@ class OpenAIRealtimeAPI {
     }
     
     func defineFunction() {
-        // For RealtimeAPI, we only need the transcription function
         let transcriptionProperty: [String: String] = [
             "type": "string",
             "description": "The exact verbatim transcription of what the user said, word-for-word, without any added context or interpretation."
@@ -246,7 +311,6 @@ class OpenAIRealtimeAPI {
             "parameters": transcriptionParams
         ]
         
-        // Define session with only the transcription function
         let tools = [updateTranscriptionFunction]
         let session: [String: Any] = ["tools": tools]
         let functionPayload: [String: Any] = [
@@ -293,10 +357,6 @@ class OpenAIRealtimeAPI {
         }
         """
         
-        DispatchQueue.main.async {
-            self.appState.isRecording = true
-        }
-        
         webSocketTask?.send(.string(message)) { error in
             if let error = error {
                 print("Error sending audio chunk: \(error)")
@@ -311,9 +371,6 @@ class OpenAIRealtimeAPI {
             switch result {
             case .failure(let error):
                 print("Error receiving audio response: \(error)")
-                DispatchQueue.main.async {
-                    self.appState.isRecording = false
-                }
                 return
                 
             case .success(let message):
@@ -353,9 +410,7 @@ class OpenAIRealtimeAPI {
             handleOutputItemCompletion(json: json)
             
         case "response.audio_transcript.delta":
-            if let transcript = json["text"] as? String {
-                captureTranscript(transcript)
-            }
+            break
             
         case "error":
             print("Error event: \(json)")
@@ -379,17 +434,10 @@ class OpenAIRealtimeAPI {
            let status = response["status"] as? String, status == "failed" {
             print("Response failed: \(response["status_details"] ?? "Unknown error")")
         }
-        
-        if !appState.transcriptionHistory.isEmpty {
-            considerGeneratingPromptWithO1()
-        }
     }
     
     private func handleSpeechStarted() {
         print("User started speaking.")
-        DispatchQueue.main.async {
-            self.appState.isRecording = true
-        }
     }
     
     private func handleSpeechEnded() {
@@ -410,42 +458,9 @@ class OpenAIRealtimeAPI {
             handleFunctionCall(functionName: functionName, 
                              argumentsString: argumentsString, 
                              callID: callID)
-        } else if let contentArray = item["content"] as? [[String: Any]],
-                  let content = contentArray.first,
-                  let transcript = content["transcript"] as? String {
-            print("Complete transcript: \(transcript)")
-            appState.appendTranscription(transcript)
         }
     }
     
-    private func considerGeneratingPromptWithO1() {
-        guard !appState.isProcessingPrompt, !appState.transcriptionHistory.isEmpty else { return }
-        
-        DispatchQueue.main.async {
-            self.appState.isProcessingPrompt = true
-        }
-        
-        let context = appState.transcriptionHistory.joined(separator: "\n")
-        
-        DispatchQueue.global(qos: .userInitiated).async {
-            self.generatePromptWithO1(fromTranscriptions: context) { result in
-                DispatchQueue.main.async {
-                    self.appState.isProcessingPrompt = false
-                    
-                    switch result {
-                    case .success(let generatedPrompt):
-                        self.appState.updateCurrentPrompt(generatedPrompt)
-                    case .failure(let error):
-                        print("Error generating prompt with O1: \(error)")
-                    }
-                }
-            }
-        }
-    }
-    
-    private func generatePromptWithO1(fromTranscriptions transcriptions: String, completion: @escaping (Result<String, Error>) -> Void) {
-        completion(.success(transcriptions))
-    }
     
     private func handleFunctionCall(functionName: String, argumentsString: String, callID: String) {
         guard let argumentsData = argumentsString.data(using: .utf8) else {
@@ -474,12 +489,12 @@ class OpenAIRealtimeAPI {
         
         appState.appendTranscription(text)
         
-        // Post notification for the ResponsesAPI to process this transcription
-        NotificationCenter.default.post(name: Notification.Name("TranscriptionAdded"), object: nil)
-        
         let output = "Transcription appended"
         sendFunctionOutputToModel(callID: callID, output: output)
+        
+        responsesAPI.generatePromptFromTranscriptions()
     }
+    
     func sendFunctionOutputToModel(callID: String, output: String) {
         let payload: [String: Any] = [
             "type": "conversation.item.create",
