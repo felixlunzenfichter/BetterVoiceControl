@@ -37,14 +37,14 @@ class ComputerUseAgent {
             return
         }
         
-        // Get screen dimensions and use half size
+        // Cap resolution at 1024x768
         guard let screen = NSScreen.main else {
             print("Cannot access screen for dimensions")
             return
         }
         let screenRect = screen.frame
-        let halfWidth = Int(screenRect.width / 2)
-        let halfHeight = Int(screenRect.height / 2)
+        let maxWidth = 1024
+        let maxHeight = 768
         
         // Create and send the initial request
         let url = URL(string: "https://api.openai.com/v1/responses")!
@@ -58,8 +58,8 @@ class ComputerUseAgent {
             "tools": [
                 [
                     "type": "computer_use_preview",
-                    "display_width": halfWidth,
-                    "display_height": halfHeight,
+                    "display_width": maxWidth,
+                    "display_height": maxHeight,
                     "environment": "mac"
                 ]
             ],
@@ -185,8 +185,8 @@ class ComputerUseAgent {
             "tools": [
                 [
                     "type": "computer_use_preview",
-                    "display_width": 1280,
-                    "display_height": 800,
+                    "display_width": 1024,
+                    "display_height": 768,
                     "environment": "mac"
                 ]
             ],
@@ -240,18 +240,18 @@ class ComputerUseAgent {
         guard let screen = NSScreen.main else { return nil }
         let screenRect = screen.frame
         
-        // Use half the original screen size
-        let halfWidth = Int(screenRect.width / 2)
-        let halfHeight = Int(screenRect.height / 2)
+        // Cap resolution at 1024x768
+        let maxWidth = 1024
+        let maxHeight = 768
         
         // Log the screen details
-        logWithTime("Original screen: \(screenRect.width)x\(screenRect.height), Using: \(halfWidth)x\(halfHeight)")
+        logWithTime("Original screen: \(screenRect.width)x\(screenRect.height), Capped to: \(maxWidth)x\(maxHeight)")
         
-        // Capture at half resolution
+        // Capture at capped resolution
         guard let bitmapRep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: halfWidth,
-            pixelsHigh: halfHeight,
+            pixelsWide: maxWidth,
+            pixelsHigh: maxHeight,
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -275,15 +275,15 @@ class ComputerUseAgent {
         let screenImage = CGDisplayCreateImage(screenID)
         
         if let screenImage = screenImage {
-            let halfSize = NSSize(width: halfWidth, height: halfHeight)
-            let imageRect = CGRect(x: 0, y: 0, width: halfWidth, height: halfHeight)
-            let nsImage = NSImage(cgImage: screenImage, size: halfSize)
+            let maxSize = NSSize(width: maxWidth, height: maxHeight)
+            let imageRect = CGRect(x: 0, y: 0, width: maxWidth, height: maxHeight)
+            let nsImage = NSImage(cgImage: screenImage, size: maxSize)
             nsImage.draw(in: imageRect)
         }
         
         NSGraphicsContext.restoreGraphicsState()
         
-        let image = NSImage(size: NSSize(width: halfWidth, height: halfHeight))
+        let image = NSImage(size: NSSize(width: maxWidth, height: maxHeight))
         image.addRepresentation(bitmapRep)
         
         return image
