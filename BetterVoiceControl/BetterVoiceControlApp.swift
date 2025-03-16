@@ -43,6 +43,7 @@ struct VoiceControlledMacApp: App {
     @StateObject private var appState = AppState()
     let realtimeAPI: OpenAIRealtimeAPI
     let responsesAPI: OpenAIResponsesAPI
+    let computerUseAgent: ComputerUseAgent
     
     init() {
         let appState = AppState()
@@ -50,6 +51,7 @@ struct VoiceControlledMacApp: App {
         let responsesAPI = OpenAIResponsesAPI(appState: appState)
         self.responsesAPI = responsesAPI
         self.realtimeAPI = OpenAIRealtimeAPI(appState: appState, responsesAPI: responsesAPI)
+        self.computerUseAgent = ComputerUseAgent(appState: appState)
         
         requestMicrophonePermissions()
     }
