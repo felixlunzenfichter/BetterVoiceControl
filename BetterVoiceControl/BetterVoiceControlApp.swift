@@ -9,10 +9,8 @@ import AVFoundation
 import Foundation
 
 class AppState: ObservableObject {
-    @Published var isRecording: Bool = false
     @Published var currentPrompt: String = ""
     @Published var transcriptionHistory: [String] = []
-    @Published var isProcessingPrompt: Bool = false
     
     func updateCurrentPrompt(_ prompt: String) {
         DispatchQueue.main.async {
@@ -75,25 +73,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                Text(appState.isRecording ? "●" : "○")
-                    .font(.system(size: 18))
-                    .foregroundColor(appState.isRecording ? .red : .gray)
-                
-                Text("Recording")
-                    .font(.caption)
-                    .foregroundColor(appState.isRecording ? .red : .gray)
-                
                 Spacer()
-                
-                if appState.isProcessingPrompt {
-                    Text("Processing")
-                        .font(.caption)
-                        .foregroundColor(.blue)
-                    
-                    Text("●")
-                        .font(.system(size: 18))
-                        .foregroundColor(.blue)
-                }
             }
             
             ScrollView {
@@ -340,9 +320,6 @@ class OpenAIRealtimeAPI {
         }
         """
         
-        DispatchQueue.main.async {
-            self.appState.isRecording = true
-        }
         
         webSocketTask?.send(.string(message)) { error in
             if let error = error {
@@ -358,9 +335,6 @@ class OpenAIRealtimeAPI {
             switch result {
             case .failure(let error):
                 print("Error receiving audio response: \(error)")
-                DispatchQueue.main.async {
-                    self.appState.isRecording = false
-                }
                 return
                 
             case .success(let message):
@@ -423,10 +397,6 @@ class OpenAIRealtimeAPI {
     }
     
     private func handleResponseCompletion(json: [String: Any]) {
-        DispatchQueue.main.async {
-            self.appState.isProcessingPrompt = false
-        }
-        
         if let response = json["response"] as? [String: Any],
            let status = response["status"] as? String, status == "failed" {
             print("Response failed: \(response["status_details"] ?? "Unknown error")")
@@ -439,9 +409,6 @@ class OpenAIRealtimeAPI {
     
     private func handleSpeechStarted() {
         print("User started speaking.")
-        DispatchQueue.main.async {
-            self.appState.isRecording = true
-        }
         stopAudioPlayback()
     }
     
@@ -472,25 +439,17 @@ class OpenAIRealtimeAPI {
     }
     
     private func considerGeneratingPromptWithO1() {
-        guard !appState.isProcessingPrompt, !appState.transcriptionHistory.isEmpty else { return }
-        
-        DispatchQueue.main.async {
-            self.appState.isProcessingPrompt = true
-        }
+        guard !appState.transcriptionHistory.isEmpty else { return }
         
         let context = appState.transcriptionHistory.joined(separator: "\n")
         
         DispatchQueue.global(qos: .userInitiated).async {
             self.generatePromptWithO1(fromTranscriptions: context) { result in
-                DispatchQueue.main.async {
-                    self.appState.isProcessingPrompt = false
-                    
-                    switch result {
-                    case .success(let generatedPrompt):
-                        self.appState.updateCurrentPrompt(generatedPrompt)
-                    case .failure(let error):
-                        print("Error generating prompt with O1: \(error)")
-                    }
+                switch result {
+                case .success(let generatedPrompt):
+                    self.appState.updateCurrentPrompt(generatedPrompt)
+                case .failure(let error):
+                    print("Error generating prompt with O1: \(error)")
                 }
             }
         }
