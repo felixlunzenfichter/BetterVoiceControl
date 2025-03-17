@@ -1,5 +1,113 @@
- let INSTRUCTIONS = """
-Your task is to be a prompt generator in a coding application designed for hands-free computing. Listen to the user’s voice input, interpret it carefully, and transform it into a clear, context-rich natural language prompt targeted at a coding agent called Claude Code. Apply optimal prompt engineering techniques to refine the user’s instructions before sending the final prompt to Claude Code for execution. Don't leave anything out and don't add anything that hasn't been mentioned. Just optimize the structure.
+let PROMPT_PROPERTY: [String: String] = [
+    "type": "string",
+    "description": "The refined or new prompt to be displayed and eventually sent to Claude Code."
+]
+
+let EDIT_PROMPT_PROPERTIES: [String: [String: String]] = [
+    "prompt": PROMPT_PROPERTY
+]
+
+let EDIT_PROMPT_PARAMS: [String: Any] = [
+    "type": "object", 
+    "properties": EDIT_PROMPT_PROPERTIES,
+    "required": ["prompt"]
+]
+
+let SEND_PROMPT_PARAMS: [String: Any] = [
+    "type": "object",
+    "properties": [String: Any](),
+    "required": [String]()
+]
+
+let EMPTY_PARAMS: [String: Any] = [
+    "type": "object",
+    "properties": [String: Any](),
+    "required": [String]()
+]
+
+let TRANSCRIPTION_PROPERTY: [String: String] = [
+    "type": "string",
+    "description": "The exact verbatim transcription of what the user said, word-for-word, without any added context or interpretation."
+]
+
+let TRANSCRIPTION_PROPERTIES: [String: [String: String]] = [
+    "text": TRANSCRIPTION_PROPERTY
+]
+
+let TRANSCRIPTION_PARAMS: [String: Any] = [
+    "type": "object", 
+    "properties": TRANSCRIPTION_PROPERTIES,
+    "required": ["text"]
+]
+
+let EDIT_PROMPT_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "editPrompt",
+    "description": "Refines or replaces the current prompt based on user input. The updated prompt is displayed on screen in real-time.",
+    "parameters": EDIT_PROMPT_PARAMS
+]
+
+let SEND_PROMPT_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "sendPrompt",
+    "description": "Transmits the final, refined prompt to the Claude Code coding agent for execution.",
+    "parameters": SEND_PROMPT_PARAMS
+]
+
+let UPDATE_TRANSCRIPTION_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "updateTranscription",
+    "description": "Provides a verbatim, word-for-word transcription of exactly what the user said without adding any conversational context, interpretation, or modification.",
+    "parameters": TRANSCRIPTION_PARAMS
+]
+
+let ACCEPT_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "accept",
+    "description": "Executes a return/enter key press in Terminal for accepting current action in Claude Code CLI. Triggered by keyword 'accept'.",
+    "parameters": EMPTY_PARAMS
+]
+
+let REJECT_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "reject",
+    "description": "Executes a sequence for rejecting current action in Claude Code CLI. Triggered by keyword 'reject'.",
+    "parameters": EMPTY_PARAMS
+]
+
+let ARROW_UP_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "arrowUp",
+    "description": "Executes an up arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow up'.",
+    "parameters": EMPTY_PARAMS
+]
+
+let ARROW_DOWN_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "arrowDown",
+    "description": "Executes a down arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow down'.",
+    "parameters": EMPTY_PARAMS
+]
+
+let ESCAPE_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "escape",
+    "description": "Executes an escape key press in Terminal for canceling actions in Claude Code CLI. Triggered by keyword 'escape'.",
+    "parameters": EMPTY_PARAMS
+]
+
+let CLEAR_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "clear",
+    "description": "Clears the current interface and resets the state. Triggered by keyword 'clear'.",
+    "parameters": EMPTY_PARAMS
+]
+
+let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, UPDATE_TRANSCRIPTION_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
+
+let INSTRUCTIONS = """
+Your task is to be a prompt generator in a coding application designed for hands-free computing. Listen to the user's voice input, interpret it carefully, and transform it into a clear, context-rich natural language prompt targeted at a coding agent called Claude Code. Apply optimal prompt engineering techniques to refine the user's instructions before sending the final prompt to Claude Code for execution. Don't leave anything out and don't add anything that hasn't been mentioned. Just optimize the structure.
+
 """
 
 import SwiftUI
@@ -7,6 +115,7 @@ import Cocoa
 import ApplicationServices
 import AVFoundation
 import Foundation
+
 
 class AppState: ObservableObject {
     @Published var currentPrompt: String = ""
@@ -31,6 +140,7 @@ class AppState: ObservableObject {
             self.transcriptionHistory = []
         }
     }
+    
 }
 
 @main
@@ -44,15 +154,13 @@ struct VoiceControlledMacApp: App {
         self.api = OpenAIRealtimeAPI(appState: appState)
         
         requestMicrophonePermissions()
+        api.connect()
     }
     
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
-                .onAppear {
-                    api.connect()
-                }
         }
     }
     
@@ -72,10 +180,6 @@ struct ContentView: View {
     
     var body: some View {
         VStack(spacing: 8) {
-            HStack {
-                Spacer()
-            }
-            
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -101,6 +205,7 @@ struct ContentView: View {
                             }
                         }
                     }
+                    
                 }
                 .padding(.vertical, 4)
             }
@@ -114,7 +219,6 @@ class OpenAIRealtimeAPI {
     private var webSocketTask: URLSessionWebSocketTask?
     private let audioEngine = AVAudioEngine()
     private let dispatchQueue = DispatchQueue(label: "com.openai.realtimeapi")
-    private let audioPlayer = AVAudioPlayerNode()
     private var appState: AppState
     
     init(appState: AppState) {
@@ -149,8 +253,7 @@ class OpenAIRealtimeAPI {
            let jsonString = String(data: jsonData, encoding: .utf8) {
             webSocketTask!.send(.string(jsonString)) { error in
                 if let error = error {
-                    print("Error sending json: \(error)")
-                    return
+                    fatalError("Error sending json: \(error)")
                 }
             }
         }
@@ -161,118 +264,23 @@ class OpenAIRealtimeAPI {
             "type": "session.update",
             "session": [
                 "instructions": INSTRUCTIONS,
-                "tool_choice": "required"
+                "turn_detection": [
+                         "type": "server_vad",
+                         "threshold": 0.5,
+                         "prefix_padding_ms": 300,
+                         "silence_duration_ms": 500,
+                         "create_response": false
+                     ],
             ]
         ])
     }
     
     func defineFunction() {
-        let promptProperty: [String: String] = [
-            "type": "string",
-            "description": "The refined or new prompt to be displayed and eventually sent to Claude Code."
+        let session: [String: Any] = [
+            "tools": ALL_FUNCTIONS,
+            "tool_choice": "required"
         ]
         
-        let editPromptProperties: [String: [String: String]] = [
-            "prompt": promptProperty
-        ]
-        
-        let editPromptParams: [String: Any] = [
-            "type": "object", 
-            "properties": editPromptProperties,
-            "required": ["prompt"]
-        ]
-        
-        let sendPromptParams: [String: Any] = [
-            "type": "object",
-            "properties": [String: Any](),
-            "required": [String]()
-        ]
-        
-        let emptyParams: [String: Any] = [
-            "type": "object",
-            "properties": [String: Any](),
-            "required": [String]()
-        ]
-        
-        let transcriptionProperty: [String: String] = [
-            "type": "string",
-            "description": "The exact verbatim transcription of what the user said, word-for-word, without any added context or interpretation."
-        ]
-        
-        let transcriptionProperties: [String: [String: String]] = [
-            "text": transcriptionProperty
-        ]
-        
-        let transcriptionParams: [String: Any] = [
-            "type": "object", 
-            "properties": transcriptionProperties,
-            "required": ["text"]
-        ]
-        let editPromptFunction: [String: Any] = [
-            "type": "function",
-            "name": "editPrompt",
-            "description": "Refines or replaces the current prompt based on user input. The updated prompt is displayed on screen in real-time.",
-            "parameters": editPromptParams
-        ]
-        
-        let sendPromptFunction: [String: Any] = [
-            "type": "function",
-            "name": "sendPrompt",
-            "description": "Transmits the final, refined prompt to the Claude Code coding agent for execution.",
-            "parameters": sendPromptParams
-        ]
-        
-        let updateTranscriptionFunction: [String: Any] = [
-            "type": "function",
-            "name": "updateTranscription",
-            "description": "Provides a verbatim, word-for-word transcription of exactly what the user said without adding any conversational context, interpretation, or modification.",
-            "parameters": transcriptionParams
-        ]
-        
-        let acceptFunction: [String: Any] = [
-            "type": "function",
-            "name": "accept",
-            "description": "Executes a return/enter key press in Terminal for accepting current action in Claude Code CLI. Triggered by keyword 'accept'.",
-            "parameters": emptyParams
-        ]
-        
-        let rejectFunction: [String: Any] = [
-            "type": "function",
-            "name": "reject",
-            "description": "Executes a sequence for rejecting current action in Claude Code CLI. Triggered by keyword 'reject'.",
-            "parameters": emptyParams
-        ]
-        
-        let arrowUpFunction: [String: Any] = [
-            "type": "function",
-            "name": "arrowUp",
-            "description": "Executes an up arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow up'.",
-            "parameters": emptyParams
-        ]
-        
-        let arrowDownFunction: [String: Any] = [
-            "type": "function",
-            "name": "arrowDown",
-            "description": "Executes a down arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow down'.",
-            "parameters": emptyParams
-        ]
-        
-        let escapeFunction: [String: Any] = [
-            "type": "function",
-            "name": "escape",
-            "description": "Executes an escape key press in Terminal for canceling actions in Claude Code CLI. Triggered by keyword 'escape'.",
-            "parameters": emptyParams
-        ]
-        
-        let clearFunction: [String: Any] = [
-            "type": "function",
-            "name": "clear",
-            "description": "Clears the current interface and resets the state. Triggered by keyword 'clear'.",
-            "parameters": emptyParams
-        ]
-        
-        let tools = [editPromptFunction, sendPromptFunction, updateTranscriptionFunction, acceptFunction, rejectFunction, arrowUpFunction, arrowDownFunction, escapeFunction, clearFunction]
-        let session: [String: Any] = ["tools": tools]
         let functionPayload: [String: Any] = [
             "type": "session.update",
             "session": session
@@ -286,7 +294,6 @@ class OpenAIRealtimeAPI {
         
         let inputFormat = inputNode.inputFormat(forBus: 0)
         print(inputFormat)
-        audioEngine.attach(audioPlayer)
         let desiredSampleRate: Double = 24000.0
         
         let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: desiredSampleRate, channels: 1, interleaved: true)!
@@ -294,9 +301,7 @@ class OpenAIRealtimeAPI {
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: audioFormat) { buffer, time in
             self.sendAudioChunk(buffer: buffer)
         }
-        let playbackFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: desiredSampleRate, channels: 1, interleaved: false)!
         
-        audioEngine.connect(audioPlayer, to: audioEngine.mainMixerNode, format: playbackFormat)
         audioEngine.prepare()
         
         do {
@@ -334,8 +339,7 @@ class OpenAIRealtimeAPI {
             
             switch result {
             case .failure(let error):
-                print("Error receiving audio response: \(error)")
-                return
+                fatalError("Error receiving response: \(error)")
                 
             case .success(let message):
                 guard case .string(let text) = message else {
@@ -353,6 +357,7 @@ class OpenAIRealtimeAPI {
                     print("Error: JSON is not of expected format.")
                     return
                 }
+                print("event type: \(eventType)")
                 
                 processEvent(eventType: eventType, json: json)
             }
@@ -367,7 +372,7 @@ class OpenAIRealtimeAPI {
         case "input_audio_buffer.speech_started":
             handleSpeechStarted()
             
-        case "input_audio_buffer.speech_ended":
+        case "input_audio_buffer.speech_stopped":
             handleSpeechEnded()
             
         case "response.output_item.done":
@@ -379,12 +384,10 @@ class OpenAIRealtimeAPI {
             }
             
         case "response.audio.delta":
-            if let delta = json["delta"] as? String {
-                playReceivedAudio(base64String: delta)
-            }
+            fatalError("this should not happen")
             
         case "error":
-            print("Error event: \(json)")
+            fatalError("Error event: \(json)")
             
         case "response.function_call_arguments.delta",
              "response.function_call_arguments.done",
@@ -401,19 +404,23 @@ class OpenAIRealtimeAPI {
            let status = response["status"] as? String, status == "failed" {
             print("Response failed: \(response["status_details"] ?? "Unknown error")")
         }
-        
-        if !appState.transcriptionHistory.isEmpty {
-            considerGeneratingPromptWithO1()
-        }
     }
     
     private func handleSpeechStarted() {
         print("User started speaking.")
-        stopAudioPlayback()
     }
     
     private func handleSpeechEnded() {
         print("User speech ended. Processing transcription...")
+        
+        send([
+            "event_id": UUID().uuidString,
+            "type": "response.create",
+            "response": [
+                "tools": [UPDATE_TRANSCRIPTION_FUNCTION],
+                "tool_choice": "required"
+            ]
+        ])
     }
     
     private func captureTranscript(_ transcript: String) {
@@ -437,32 +444,23 @@ class OpenAIRealtimeAPI {
             appState.appendTranscription(transcript)
         }
     }
-    
-    private func considerGeneratingPromptWithO1() {
-        guard !appState.transcriptionHistory.isEmpty else { return }
-        
-        let context = appState.transcriptionHistory.joined(separator: "\n")
-        
-        DispatchQueue.global(qos: .userInitiated).async {
-            self.generatePromptWithO1(fromTranscriptions: context) { result in
-                switch result {
-                case .success(let generatedPrompt):
-                    self.appState.updateCurrentPrompt(generatedPrompt)
-                case .failure(let error):
-                    print("Error generating prompt with O1: \(error)")
-                }
-            }
-        }
-    }
-    
-    private func generatePromptWithO1(fromTranscriptions transcriptions: String, completion: @escaping (Result<String, Error>) -> Void) {
-        completion(.success(transcriptions))
-    }
+
+   
     
     private func handleFunctionCall(functionName: String, argumentsString: String, callID: String) {
         guard let argumentsData = argumentsString.data(using: .utf8) else {
             print("Failed to convert arguments string to data")
             return
+        }
+        
+        if functionName != "updateTranscription" {
+            if !appState.transcriptionHistory.isEmpty {
+                DispatchQueue.main.async {
+                    let lastIndex = self.appState.transcriptionHistory.count - 1
+                    let currentTranscription = self.appState.transcriptionHistory[lastIndex]
+                    self.appState.transcriptionHistory[lastIndex] = "\(currentTranscription) → \(functionName)"
+                }
+            }
         }
         
         switch functionName {
@@ -512,40 +510,7 @@ class OpenAIRealtimeAPI {
         }
     }
     
-    func stopAudioPlayback() {
-        dispatchQueue.async {
-            if self.audioPlayer.isPlaying {
-                self.audioPlayer.stop()
-                print("Audio playback stopped and buffers cleared.")
-            }
-        }
-    }
 
-    func playReceivedAudio(base64String: String) {
-        guard let audioBuffer = base64ToAudioBuffer(base64String: base64String) else {
-            print("Failed to create audio buffer.")
-            return
-        }
-        
-        dispatchQueue.async {
-            if !self.audioEngine.isRunning {
-                do {
-                    try self.audioEngine.start()
-                    print("Playback engine restarted.")
-                } catch {
-                    print("Playback engine couldn't start: \(error)")
-                    return
-                }
-            }
-            
-            self.audioPlayer.scheduleBuffer(audioBuffer, at: nil, options: [], completionHandler: nil)
-            
-            if !self.audioPlayer.isPlaying {
-                self.audioPlayer.play()
-                print("Audio playback started.")
-            }
-        }
-    }
     
     func sendCommandToClaudeTerminal(_ command: String) throws {
         print("Preparing to inject command into active terminal...")
@@ -695,10 +660,21 @@ class OpenAIRealtimeAPI {
         
         appState.appendTranscription(text)
         
-        considerGeneratingPromptWithO1()
-        
         let output = "Transcription appended"
         sendFunctionOutputToModel(callID: callID, output: output)
+        
+        
+            let availableFunctions = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
+            
+            self.send([
+                "event_id": UUID().uuidString,
+                "type": "response.create",
+                "response": [
+                    "tools": availableFunctions,
+                    "tool_choice": "required",
+                ]
+            ])
+        
     }
     func sendFunctionOutputToModel(callID: String, output: String) {
         let payload: [String: Any] = [
@@ -714,36 +690,6 @@ class OpenAIRealtimeAPI {
     }
 }
 
-func base64ToAudioBuffer(base64String: String, sampleRate: Double = 24000, channels: AVAudioChannelCount = 1) -> AVAudioPCMBuffer? {
-    guard let pcmData = Data(base64Encoded: base64String) else {
-        print("Error decoding base64 string")
-        return nil
-    }
-    
-    let float32Data = pcm16ToFloat32(pcmData: pcmData)
-    let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: channels, interleaved: false)!
-    let frameCapacity = AVAudioFrameCount(float32Data.count)
-    
-    guard let audioBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
-        print("Error creating audio buffer")
-        return nil
-    }
-    
-    audioBuffer.frameLength = frameCapacity
-    for i in 0..<Int(audioBuffer.frameLength) {
-        audioBuffer.floatChannelData?.pointee[i] = float32Data[i]
-    }
-    
-    return audioBuffer
-}
-
-func pcm16ToFloat32(pcmData: Data) -> [Float] {
-    return pcmData.withUnsafeBytes { rawBuffer -> [Float] in
-        let ptr = rawBuffer.baseAddress!.assumingMemoryBound(to: Int16.self)
-        let count = pcmData.count / MemoryLayout<Int16>.size
-        return (0..<count).map { Float(ptr[$0]) / 32768.0 }
-    }
-}
 
 
 let problematicCharacters: [Character] = {
