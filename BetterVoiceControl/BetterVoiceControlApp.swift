@@ -408,7 +408,8 @@ class OpenAIRealtimeAPI {
             fatalError("this should not happen")
             
         case "error":
-            fatalError("Error event: \(json)")
+            resetConnection()
+            print("Error event: \(json)")
             
         case "response.function_call_arguments.done":
             if let name = json["name"] as? String, name == "updateTranscription" {
@@ -677,9 +678,22 @@ class OpenAIRealtimeAPI {
         key code 53 -- escape key
         """
         
-        appState.clearTranscriptions()
-        
         executeKeystrokesInTerminal(clearSequence, actionName: "clear", callID: callID)
+    }
+    
+    private func resetConnection() {
+            if self.audioEngine.isRunning {
+                self.audioEngine.inputNode.removeTap(onBus: 0)
+                self.audioEngine.stop()
+            }
+        webSocketTask?.cancel()
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.appState.clearTranscriptions()
+                self.appState.updateCurrentPrompt("")
+                self.connect()
+                print("Connection reset complete")
+            }
     }
     
     func sendFunctionOutputToModel(callID: String, output: String) {
