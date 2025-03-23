@@ -135,6 +135,16 @@ class AppState: ObservableObject {
         }
     }
     
+    func appendAction(actionName: String) {
+        DispatchQueue.main.async {
+            if !self.transcriptionHistory.isEmpty {
+                let lastIndex = self.transcriptionHistory.count - 1
+                let currentTranscription = self.transcriptionHistory[lastIndex]
+                self.transcriptionHistory[lastIndex] = "\(currentTranscription) → \(actionName)"
+            }
+        }
+    }
+    
     func clearTranscriptions() {
         DispatchQueue.main.async {
             self.transcriptionHistory = []
@@ -380,7 +390,7 @@ class OpenAIRealtimeAPI {
             
         case "response.audio_transcript.delta":
             if let transcript = json["text"] as? String {
-                captureTranscript(transcript)
+                print("Transcript delta: \(transcript)")
             }
             
         case "response.audio.delta":
@@ -389,14 +399,33 @@ class OpenAIRealtimeAPI {
         case "error":
             fatalError("Error event: \(json)")
             
+        case "response.function_call_arguments.done":
+            if let name = json["name"] as? String, name == "updateTranscription" {
+                executeAction()
+            }
+            
         case "response.function_call_arguments.delta",
-             "response.function_call_arguments.done",
              "conversation.item.created":
             break
             
         default:
             break
         }
+    }
+    
+    private func executeAction() {
+        print("executeAction has been called")
+        
+        let availableFunctions = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
+        
+        self.send([
+            "event_id": UUID().uuidString,
+            "type": "response.create",
+            "response": [
+                "tools": availableFunctions,
+                "tool_choice": "required",
+            ]
+        ])
     }
     
     private func handleResponseCompletion(json: [String: Any]) {
@@ -423,10 +452,6 @@ class OpenAIRealtimeAPI {
         ])
     }
     
-    private func captureTranscript(_ transcript: String) {
-        print("Transcript delta: \(transcript)")
-    }
-    
     private func handleOutputItemCompletion(json: [String: Any]) {
         guard let item = json["item"] as? [String: Any] else { return }
         
@@ -445,8 +470,6 @@ class OpenAIRealtimeAPI {
         }
     }
 
-   
-    
     private func handleFunctionCall(functionName: String, argumentsString: String, callID: String) {
         guard let argumentsData = argumentsString.data(using: .utf8) else {
             print("Failed to convert arguments string to data")
@@ -454,13 +477,7 @@ class OpenAIRealtimeAPI {
         }
         
         if functionName != "updateTranscription" {
-            if !appState.transcriptionHistory.isEmpty {
-                DispatchQueue.main.async {
-                    let lastIndex = self.appState.transcriptionHistory.count - 1
-                    let currentTranscription = self.appState.transcriptionHistory[lastIndex]
-                    self.appState.transcriptionHistory[lastIndex] = "\(currentTranscription) → \(functionName)"
-                }
-            }
+            appState.appendAction(actionName: functionName)
         }
         
         switch functionName {
@@ -482,8 +499,10 @@ class OpenAIRealtimeAPI {
                 sendFunctionOutputToModel(callID: callID, output: errorOutput)
                 return
             }
-            handleUpdateTranscription(text: text, callID: callID)
-            
+            let output = "Transcription appended"
+            appState.appendTranscription(text)
+            sendFunctionOutputToModel(callID: callID, output: output)
+
         case "sendPrompt":
             handleSendPrompt(callID: callID)
             
@@ -510,11 +529,8 @@ class OpenAIRealtimeAPI {
         }
     }
     
-
-    
     func sendCommandToClaudeTerminal(_ command: String) throws {
         print("Preparing to inject command into active terminal...")
-        
         
         let script = """
         tell application "Terminal"
@@ -655,27 +671,6 @@ class OpenAIRealtimeAPI {
         executeKeystrokesInTerminal(clearSequence, actionName: "clear", callID: callID)
     }
     
-    func handleUpdateTranscription(text: String, callID: String) {
-        print("Appending transcription: \(text)")
-        
-        appState.appendTranscription(text)
-        
-        let output = "Transcription appended"
-        sendFunctionOutputToModel(callID: callID, output: output)
-        
-        
-            let availableFunctions = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
-            
-            self.send([
-                "event_id": UUID().uuidString,
-                "type": "response.create",
-                "response": [
-                    "tools": availableFunctions,
-                    "tool_choice": "required",
-                ]
-            ])
-        
-    }
     func sendFunctionOutputToModel(callID: String, output: String) {
         let payload: [String: Any] = [
             "type": "conversation.item.create",
