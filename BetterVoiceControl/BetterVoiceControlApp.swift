@@ -146,6 +146,18 @@ class AppState: ObservableObject {
         }
     }
     
+    func appendDeltaTranscription(_ deltaText: String) {
+        DispatchQueue.main.async {
+            if self.transcriptionHistory.isEmpty {
+                self.transcriptionHistory.append(deltaText)
+            } else {
+                let lastIndex = self.transcriptionHistory.count - 1
+                let currentText = self.transcriptionHistory[lastIndex]
+                self.transcriptionHistory[lastIndex] = currentText + deltaText
+            }
+        }
+    }
+    
     func appendAction(actionName: String) {
         DispatchQueue.main.async {
             if !self.transcriptionHistory.isEmpty {
@@ -167,15 +179,16 @@ class AppState: ObservableObject {
 @main
 struct VoiceControlledMacApp: App {
     @StateObject private var appState = AppState()
-    let api: OpenAIRealtimeAPI
+    var transcriptionApi: TranscriptionAPI!
     
     init() {
         let appState = AppState()
         self._appState = StateObject(wrappedValue: appState)
-        self.api = OpenAIRealtimeAPI(appState: appState)
         
         requestMicrophonePermissions()
-        api.connect()
+        
+        transcriptionApi = TranscriptionAPI(appState: appState)
+        transcriptionApi.connect()
     }
     
     var body: some Scene {
@@ -741,5 +754,217 @@ extension String {
             escaped = escaped.replacingOccurrences(of: String(char), with: replacement)
         }
         return escaped
+    }
+}
+
+class TranscriptionAPI {
+    private var webSocketTask: URLSessionWebSocketTask?
+    private let audioEngine = AVAudioEngine()
+    private let dispatchQueue = DispatchQueue(label: "com.transcription.api")
+    private var appState: AppState
+    
+    private var clientSecret: String?
+    
+    init(appState: AppState) {
+        self.appState = appState
+    }
+    
+    func connect() {
+        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
+        let sessionsUrlString = "https://api.openai.com/v1/realtime/transcription_sessions"
+        
+        guard let url = URL(string: sessionsUrlString) else {
+            print("Transcription API: Invalid sessions URL.")
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let requestBody = """
+        {
+          "input_audio_transcription": {
+            "model": "gpt-4o-transcribe"
+          },
+          "turn_detection": {
+            "type": "server_vad",
+            "threshold": 0.5,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 500
+          },
+          "input_audio_noise_reduction": {
+            "type": "near_field"
+          }
+        }
+        """
+        request.httpBody = requestBody.data(using: .utf8)
+        
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                print("Transcription API: Error creating session: \(error)")
+                return
+            }
+            
+            if let data = data, let responseString = String(data: data, encoding: .utf8) {
+                print("Transcription API: Session created response: \(responseString)")
+                
+                do {
+                    if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
+                        if let secretObj = json["client_secret"] as? [String: Any],
+                           let secretValue = secretObj["value"] as? String {
+                            self.clientSecret = secretValue
+                            print("Transcription API: Client secret received")
+                            self.connectWebSocket(clientSecret: secretValue)
+                        } else {
+                            print("Transcription API: No client_secret value in response")
+                        }
+                    } else {
+                        print("Transcription API: Invalid JSON response")
+                    }
+                } catch {
+                    print("Transcription API: Error parsing session response: \(error)")
+                }
+            }
+        }.resume()
+    }
+    
+    private func connectWebSocket(clientSecret: String) {
+        let wsUrlString = "wss://api.openai.com/v1/realtime"
+        
+        guard let url = URL(string: wsUrlString) else {
+            print("Transcription API: Invalid WebSocket URL.")
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(clientSecret)", forHTTPHeaderField: "Authorization")
+        request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
+        webSocketTask = URLSession(configuration: .default).webSocketTask(with: request)
+        webSocketTask!.resume()
+        
+        print("Transcription API: WebSocket connected")
+        setupAudioEngine()
+    }
+    
+
+    
+    private func send(_ jsonObj: [String: Any]) {
+        if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            webSocketTask!.send(.string(jsonString)) { error in
+                if let error = error {
+                    print("Transcription API: Error sending json: \(error)")
+                }
+            }
+        }
+    }
+    
+    private func setupAudioEngine() {
+        let inputNode = audioEngine.inputNode
+        
+        let inputFormat = inputNode.inputFormat(forBus: 0)
+        print("Transcription API: Input format - \(inputFormat)")
+        let desiredSampleRate: Double = 24000.0
+        
+        let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: desiredSampleRate, channels: 1, interleaved: true)!
+        
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: audioFormat) { buffer, time in
+            self.sendAudioChunk(buffer: buffer)
+        }
+        
+        audioEngine.prepare()
+        
+        do {
+            try audioEngine.start()
+            print("Transcription API: Audio engine started.")
+            receiveResponse()
+        } catch {
+            print("Transcription API: Audio engine couldn't start: \(error)")
+        }
+    }
+    
+    private func sendAudioChunk(buffer: AVAudioPCMBuffer) {
+        guard let channelData = buffer.int16ChannelData?[0] else { return }
+        let data = Data(bytes: channelData, count: Int(buffer.frameLength * buffer.format.streamDescription.pointee.mBytesPerFrame))
+        let base64Audio = data.base64EncodedString()
+        
+        let message = """
+        {
+            "type": "input_audio_buffer.append",
+            "audio": "\(base64Audio)"
+        }
+        """
+        
+        webSocketTask?.send(.string(message)) { error in
+            if let error = error {
+                print("Transcription API: Error sending audio chunk: \(error)")
+            }
+        }
+    }
+    
+    func receiveResponse() {
+        webSocketTask?.receive { [self] result in
+            defer { self.receiveResponse() }
+            
+            switch result {
+            case .failure(let error):
+                print("Transcription API: Error receiving response: \(error)")
+                
+            case .success(let message):
+                guard case .string(let text) = message else {
+                    if case .data(let data) = message {
+                        print("Transcription API: Received data message of size: \(data.count) bytes.")
+                    } else {
+                        print("Transcription API: Unknown message type received.")
+                    }
+                    return
+                }
+                
+                guard let data = text.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                      let eventType = json["type"] as? String else {
+                    print("Transcription API: JSON is not of expected format.")
+                    return
+                }
+                print("Transcription API: Event type: \(eventType)")
+                print("Transcription API: Full response: \(json)")
+                
+                switch eventType {
+                case "input_audio_buffer.speech_started":
+                    print("Transcription API: User started speaking.")
+                    
+                case "input_audio_buffer.speech_stopped":
+                    print("Transcription API: User stopped speaking.")
+                    
+                case "conversation.item.input_audio_transcription.delta":
+                    if let delta = json["delta"] as? String {
+                       print("Transcription API: Delta transcript: \(delta)")
+                        self.appState.appendDeltaTranscription(delta)
+                    }
+                    
+                case "conversation.item.input_audio_transcription.completed":
+                    if let transcript = json["transcript"] as? String {
+                        print("Transcription API: Complete transcript: \(transcript)")
+                    }
+                    
+                case "error":
+                    print("Transcription API: Error event: \(json)")
+                    
+                default:
+                    print("Transcription API: Unhandled event type: \(eventType)")
+                }
+            }
+        }
+    }
+    
+    func disconnect() {
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        webSocketTask?.cancel()
+        print("Transcription API: Disconnected.")
     }
 }
