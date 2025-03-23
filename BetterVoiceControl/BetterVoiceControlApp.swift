@@ -106,8 +106,19 @@ let CLEAR_FUNCTION: [String: Any] = [
 let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, UPDATE_TRANSCRIPTION_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
 
 let INSTRUCTIONS = """
-Your task is to be a prompt generator in a coding application designed for hands-free computing. Listen to the user's voice input, interpret it carefully, and transform it into a clear, context-rich natural language prompt targeted at a coding agent called Claude Code. Apply optimal prompt engineering techniques to refine the user's instructions before sending the final prompt to Claude Code for execution. Don't leave anything out and don't add anything that hasn't been mentioned. Just optimize the structure.
+Your task is to assist in hands-free voice control for coding using Claude Code CLI. Follow this strict workflow:
 
+1. First, ALWAYS provide a verbatim transcription of what the user said using the updateTranscription function, so the user can verify you understood correctly.
+
+2. After the transcription is confirmed, execute ONE of these actions based on the user's intent:
+   - editPrompt: Optimize the voice input into a clear, contextual prompt for Claude Code
+   - sendPrompt: Send the current prompt to Claude Code
+   - accept/reject: Execute accept or reject actions in Claude Code CLI 
+   - arrowUp/arrowDown: Navigate in the CLI
+   - escape: Cancel current actions
+   - clear: Reset the interface
+
+Never respond with text - only use the available functions. Always transcribe first, then execute exactly one action.
 """
 
 import SwiftUI
