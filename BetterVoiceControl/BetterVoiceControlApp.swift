@@ -25,21 +25,6 @@ let EMPTY_PARAMS: [String: Any] = [
     "required": [String]()
 ]
 
-let TRANSCRIPTION_PROPERTY: [String: String] = [
-    "type": "string",
-    "description": "The exact verbatim transcription of what the user said, word-for-word, without any added context or interpretation."
-]
-
-let TRANSCRIPTION_PROPERTIES: [String: [String: String]] = [
-    "text": TRANSCRIPTION_PROPERTY
-]
-
-let TRANSCRIPTION_PARAMS: [String: Any] = [
-    "type": "object", 
-    "properties": TRANSCRIPTION_PROPERTIES,
-    "required": ["text"]
-]
-
 let EDIT_PROMPT_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "editPrompt",
@@ -52,13 +37,6 @@ let SEND_PROMPT_FUNCTION: [String: Any] = [
     "name": "sendPrompt",
     "description": "Transmits the final, refined prompt to the Claude Code coding agent for execution.",
     "parameters": SEND_PROMPT_PARAMS
-]
-
-let UPDATE_TRANSCRIPTION_FUNCTION: [String: Any] = [
-    "type": "function",
-    "name": "updateTranscription",
-    "description": "Provides a verbatim, word-for-word transcription of exactly what the user said without adding any conversational context, interpretation, or modification.",
-    "parameters": TRANSCRIPTION_PARAMS
 ]
 
 let ACCEPT_FUNCTION: [String: Any] = [
@@ -103,22 +81,22 @@ let CLEAR_FUNCTION: [String: Any] = [
     "parameters": EMPTY_PARAMS
 ]
 
-let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, UPDATE_TRANSCRIPTION_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
+let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
 
 let INSTRUCTIONS = """
-Your task is to assist in hands-free voice control for coding using Claude Code CLI. Follow this strict workflow:
+Your task is to assist in hands-free voice control for coding using Claude Code CLI.
 
-1. First, ALWAYS provide a verbatim transcription of what the user said using the updateTranscription function, so the user can verify you understood correctly.
-
-2. After the transcription is confirmed, execute ONE of these actions based on the user's intent:
-   - editPrompt: Optimize the voice input into a clear, contextual prompt for Claude Code
+You will receive a transcription of the user's speech. Based on this transcription, execute exactly ONE of these actions:
+   - editPrompt: Optimize the transcribed input into a clear prompt for Claude Code. Consider everything the user has said, without leaving anything out or adding anything new. This is just an optimization step. Treat subsequent transcriptions as potential corrections to the current prompt, not as entirely new prompts.
    - sendPrompt: Send the current prompt to Claude Code
    - accept/reject: Execute accept or reject actions in Claude Code CLI 
    - arrowUp/arrowDown: Navigate in the CLI
    - escape: Cancel current actions
-   - clear: Reset the interface
+   - clear: Reset the interface and clear the conversation context
 
-Never respond with text - only use the available functions. Always transcribe first, then execute exactly one action.
+Execute the most appropriate function based on the user's intent in the transcription.
+
+Example: If the transcription is "send this prompt to Claude" or just "send", use the sendPrompt function.
 """
 
 import SwiftUI
@@ -127,10 +105,29 @@ import ApplicationServices
 import AVFoundation
 import Foundation
 
+// Define a structure to hold transcription and action information
+struct TranscriptionItem: Identifiable, Hashable {
+    var id = UUID()
+    var transcription: String
+    var action: String?
+    var isComplete: Bool = false
+    
+    static func == (lhs: TranscriptionItem, rhs: TranscriptionItem) -> Bool {
+        return lhs.id == rhs.id
+    }
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+}
 
 class AppState: ObservableObject {
     @Published var currentPrompt: String = ""
-    @Published var transcriptionHistory: [String] = []
+    @Published var transcriptionItems: [TranscriptionItem] = []
+    @Published var eventLogs: [String] = []
+    let startTime = Date()
+    private var currentDeltaTranscription: String = ""
+    private var currentTranscriptionID: UUID? = nil
     
     func updateCurrentPrompt(_ prompt: String) {
         DispatchQueue.main.async {
@@ -138,39 +135,99 @@ class AppState: ObservableObject {
         }
     }
     
-    func appendTranscription(_ text: String) {
+    // For complete transcriptions
+    func appendCompleteTranscription(_ text: String) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
         DispatchQueue.main.async {
-            self.transcriptionHistory.append(text)
+            // If we have a current delta transcription in progress with matching ID
+            if let id = self.currentTranscriptionID, 
+               let index = self.transcriptionItems.firstIndex(where: { $0.id == id }) {
+                // Replace it with the complete version
+                var item = self.transcriptionItems[index]
+                item.transcription = text
+                item.isComplete = true
+                self.transcriptionItems[index] = item
+            } else {
+                // Just add a new complete transcription
+                self.transcriptionItems.append(TranscriptionItem(transcription: text, isComplete: true))
+            }
+            
+            // Reset the current delta tracking
+            self.currentDeltaTranscription = ""
+            self.currentTranscriptionID = nil
         }
     }
     
+    // For delta transcriptions (partial)
     func appendDeltaTranscription(_ deltaText: String) {
         DispatchQueue.main.async {
-            if self.transcriptionHistory.isEmpty {
-                self.transcriptionHistory.append(deltaText)
+            // If we're starting a new transcription
+            if self.currentTranscriptionID == nil {
+                let newItem = TranscriptionItem(transcription: deltaText, isComplete: false)
+                self.currentTranscriptionID = newItem.id
+                self.currentDeltaTranscription = deltaText
+                self.transcriptionItems.append(newItem)
             } else {
-                let lastIndex = self.transcriptionHistory.count - 1
-                let currentText = self.transcriptionHistory[lastIndex]
-                self.transcriptionHistory[lastIndex] = currentText + deltaText
+                // We're continuing an existing transcription
+                self.currentDeltaTranscription += deltaText
+                
+                // Find and update the item with the matching ID
+                if let id = self.currentTranscriptionID,
+                   let index = self.transcriptionItems.firstIndex(where: { $0.id == id }) {
+                    var item = self.transcriptionItems[index]
+                    item.transcription = self.currentDeltaTranscription
+                    self.transcriptionItems[index] = item
+                }
             }
         }
     }
     
+    // Start a new transcription session (call this when speech starts)
+    func startNewTranscription() {
+        self.currentDeltaTranscription = ""
+        self.currentTranscriptionID = nil
+    }
+    
+    // Add an action to a transcription
     func appendAction(actionName: String) {
         DispatchQueue.main.async {
-            if !self.transcriptionHistory.isEmpty {
-                let lastIndex = self.transcriptionHistory.count - 1
-                let currentTranscription = self.transcriptionHistory[lastIndex]
-                self.transcriptionHistory[lastIndex] = "\(currentTranscription) → \(actionName)"
+            // If we have a current transcription ID, use that
+            if let id = self.currentTranscriptionID,
+               let index = self.transcriptionItems.firstIndex(where: { $0.id == id }) {
+                var item = self.transcriptionItems[index]
+                item.action = actionName
+                self.transcriptionItems[index] = item
+            } else if !self.transcriptionItems.isEmpty {
+                // Otherwise use the last complete item
+                let lastIndex = self.transcriptionItems.count - 1
+                var item = self.transcriptionItems[lastIndex]
+                item.action = actionName
+                self.transcriptionItems[lastIndex] = item
+            }
+        }
+    }
+    
+    func logEvent(_ source: String, _ event: String) {
+        let timeElapsed = Date().timeIntervalSince(startTime)
+        let logEntry = "[\(String(format: "%.3f", timeElapsed))s] [\(source)] \(event)"
+        
+        DispatchQueue.main.async {
+            self.eventLogs.append(logEntry)
+            
+            // Keep only the last 100 events to prevent memory issues
+            if self.eventLogs.count > 100 {
+                self.eventLogs.removeFirst(self.eventLogs.count - 100)
             }
         }
     }
     
     func clearTranscriptions() {
         DispatchQueue.main.async {
-            self.transcriptionHistory = []
+            self.transcriptionItems = []
+            self.currentDeltaTranscription = ""
+            self.currentTranscriptionID = nil
+            self.eventLogs = []
         }
     }
     
@@ -180,6 +237,7 @@ class AppState: ObservableObject {
 struct VoiceControlledMacApp: App {
     @StateObject private var appState = AppState()
     var transcriptionApi: TranscriptionAPI!
+    var functionCalling: FunctionCalling!
     
     init() {
         let appState = AppState()
@@ -187,7 +245,8 @@ struct VoiceControlledMacApp: App {
         
         requestMicrophonePermissions()
         
-        transcriptionApi = TranscriptionAPI(appState: appState)
+        functionCalling = FunctionCalling(appState: appState)
+        transcriptionApi = TranscriptionAPI(appState: appState, functionCalling: functionCalling)
         transcriptionApi.connect()
     }
     
@@ -225,176 +284,174 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     
-                    if !appState.transcriptionHistory.isEmpty {
+                    if !appState.transcriptionItems.isEmpty {
                         Divider()
                         
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Recent Transcriptions:")
                                 .font(.headline)
                             
-                            ForEach(appState.transcriptionHistory.indices, id: \.self) { index in
-                                Text("\(index + 1). \(appState.transcriptionHistory[index])")
-                                    .font(.caption)
-                                    .padding(.vertical, 2)
+                            ForEach(appState.transcriptionItems.indices, id: \.self) { index in
+                                let item = appState.transcriptionItems[index]
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(index + 1). \(item.transcription)")
+                                        .font(.caption)
+                                        .padding(.bottom, 1)
+                                    
+                                    if let action = item.action {
+                                        Text("   ↳ Action: \(action)")
+                                            .font(.caption)
+                                            .foregroundColor(.blue)
+                                    }
+                                }
+                                .padding(.vertical, 2)
                             }
                         }
                     }
                     
+                    Divider()
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Event Logs:")
+                            .font(.headline)
+                        
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(appState.eventLogs.reversed(), id: \.self) { logEntry in
+                                    Text(logEntry)
+                                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                        }
+                    }
                 }
                 .padding(.vertical, 4)
             }
         }
         .padding(12)
-        .frame(minWidth: 700, minHeight: 500)
+        .frame(minWidth: 700, minHeight: 600)
     }
 }
 
-class OpenAIRealtimeAPI {
-    private var webSocketTask: URLSessionWebSocketTask?
-    private let audioEngine = AVAudioEngine()
-    private let dispatchQueue = DispatchQueue(label: "com.openai.realtimeapi")
+class FunctionCalling {
     private var appState: AppState
+    private var session: URLSession
+    private var currentConversation: [[String: Any]] = []
     
     init(appState: AppState) {
         self.appState = appState
+        self.session = URLSession(configuration: .default)
+        
+        // Initialize the conversation with the system instructions
+        let systemMessage: [String: Any] = [
+            "role": "system",
+            "content": INSTRUCTIONS
+        ]
+        currentConversation.append(systemMessage)
     }
     
-    func connect() {
-        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
-        let urlString = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+    func processTranscription(_ transcript: String) {
+        print("Processing transcription for function calling: \(transcript)")
         
-        guard let url = URL(string: urlString) else {
-            print("Invalid URL.")
-            return
-        }
+        // Add the user's message to the conversation
+        let userMessage: [String: Any] = [
+            "role": "user",
+            "content": transcript
+        ]
+        currentConversation.append(userMessage)
+        
+        // Call the responses API with our defined functions
+        callResponsesAPI(input: currentConversation)
+    }
+    
+    private func callResponsesAPI(input: [[String: Any]]) {
+        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
+        let url = URL(string: "https://api.openai.com/v1/responses")!
         
         var request = URLRequest(url: url)
+        request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        webSocketTask = URLSession(configuration: .default).webSocketTask(with: request)
-        webSocketTask!.resume()
-        defineFunction()
-        setInstructions()
-        
-        print("Connected to OpenAI Realtime API.")
-        setupAudioEngine()
-    }
-    
-    
-    func send(_ jsonObj: [String: Any]) {
-        if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            webSocketTask!.send(.string(jsonString)) { error in
-                if let error = error {
-                    fatalError("Error sending json: \(error)")
-                }
-            }
-        }
-    }
-    
-    func setInstructions() {
-        send([
-            "type": "session.update",
-            "session": [
-                "instructions": INSTRUCTIONS,
-                "turn_detection": [
-                         "type": "server_vad",
-                         "threshold": 0.5,
-                         "prefix_padding_ms": 300,
-                         "silence_duration_ms": 500,
-                         "create_response": false
-                     ],
-            ]
-        ])
-    }
-    
-    func defineFunction() {
-        let session: [String: Any] = [
+        let requestBody: [String: Any] = [
+            "model": "gpt-4o",
+            "input": input,
             "tools": ALL_FUNCTIONS,
             "tool_choice": "required"
         ]
         
-        let functionPayload: [String: Any] = [
-            "type": "session.update",
-            "session": session
-        ]
-        
-        send(functionPayload)
-    }
-    
-    func setupAudioEngine() {
-        let inputNode = audioEngine.inputNode
-        
-        let inputFormat = inputNode.inputFormat(forBus: 0)
-        print(inputFormat)
-        let desiredSampleRate: Double = 24000.0
-        
-        let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: desiredSampleRate, channels: 1, interleaved: true)!
-        
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: audioFormat) { buffer, time in
-            self.sendAudioChunk(buffer: buffer)
-        }
-        
-        audioEngine.prepare()
+        appState.logEvent("FunctionCalling", "Sending request to Responses API")
         
         do {
-            try audioEngine.start()
-            print("Audio engine started.")
-            receiveResponse()
-        } catch {
-            print("Audio engine couldn't start: \(error)")
-        }
-    }
-    
-    private func sendAudioChunk(buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.int16ChannelData?[0] else { return }
-        let data = Data(bytes: channelData, count: Int(buffer.frameLength * buffer.format.streamDescription.pointee.mBytesPerFrame))
-        let base64Audio = data.base64EncodedString()
-        
-        let message = """
-        {
-            "type": "input_audio_buffer.append",
-            "audio": "\(base64Audio)"
-        }
-        """
-        
-        
-        webSocketTask?.send(.string(message)) { error in
-            if let error = error {
-                print("Error sending audio chunk: \(error)")
-            }
-        }
-    }
-    
-    func receiveResponse() {
-        webSocketTask?.receive { [self] result in
-            defer { self.receiveResponse() }
+            let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
+            request.httpBody = jsonData
             
-            switch result {
-            case .failure(let error):
-                fatalError("Error receiving response: \(error)")
+            let task = session.dataTask(with: request) { [weak self] data, response, error in
+                guard let self = self else { return }
                 
-            case .success(let message):
-                guard case .string(let text) = message else {
-                    if case .data(let data) = message {
-                        print("Received data message of size: \(data.count) bytes.")
-                    } else {
-                        print("Unknown message type received.")
-                    }
+                if let error = error {
+                    print("Error calling Responses API: \(error)")
+                    self.appState.logEvent("FunctionCalling", "API error: \(error)")
                     return
                 }
                 
-                guard let data = text.data(using: .utf8),
-                      let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                      let eventType = json["type"] as? String else {
-                    print("Error: JSON is not of expected format.")
+                guard let data = data else {
+                    print("No data received from API")
+                    self.appState.logEvent("FunctionCalling", "No data received")
                     return
                 }
-                print("event type: \(eventType)")
                 
-                processEvent(eventType: eventType, json: json)
+                self.appState.logEvent("FunctionCalling", "Response received")
+                self.handleResponsesAPIResult(data)
             }
+            
+            task.resume()
+        } catch {
+            print("Error creating request: \(error)")
+            appState.logEvent("FunctionCalling", "Error creating request: \(error)")
+        }
+    }
+    
+    private func handleResponsesAPIResult(_ data: Data) {
+        do {
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                print("Failed to parse API response")
+                appState.logEvent("FunctionCalling", "Failed to parse API response")
+                return
+            }
+            
+            print("Responses API result: \(json)")
+            
+            // Extract function calls from the output
+            if let output = json["output"] as? [[String: Any]] {
+                appState.logEvent("FunctionCalling", "Retrieved \(output.count) output items")
+                
+                for item in output {
+                    if let type = item["type"] as? String, type == "function_call",
+                       let callID = item["call_id"] as? String,
+                       let functionName = item["name"] as? String,
+                       let argumentsString = item["arguments"] as? String {
+                        
+                        appState.logEvent("FunctionCalling", "Function call: \(functionName)")
+                        
+                        // Handle the function call
+                        handleFunctionCall(functionName: functionName, 
+                                         argumentsString: argumentsString, 
+                                         callID: callID)
+                        
+                        // Add this call to our conversation
+                        currentConversation.append(item)
+                    } else {
+                        appState.logEvent("FunctionCalling", "Non-function output item: \(item["type"] as? String ?? "unknown")")
+                    }
+                }
+            } else {
+                appState.logEvent("FunctionCalling", "No output items in response")
+            }
+        } catch {
+            print("Error processing API response: \(error)")
+            appState.logEvent("FunctionCalling", "Error processing API response: \(error)")
         }
     }
     
@@ -403,54 +460,19 @@ class OpenAIRealtimeAPI {
         case "response.done":
             handleResponseCompletion(json: json)
             
-        case "input_audio_buffer.speech_started":
-            handleSpeechStarted()
-            
-        case "input_audio_buffer.speech_stopped":
-            handleSpeechEnded()
-            
         case "response.output_item.done":
             handleOutputItemCompletion(json: json)
             
-        case "response.audio_transcript.delta":
-            if let transcript = json["text"] as? String {
-                print("Transcript delta: \(transcript)")
-            }
-            
-        case "response.audio.delta":
-            fatalError("this should not happen")
-            
         case "error":
-            resetConnection()
             print("Error event: \(json)")
             
-        case "response.function_call_arguments.done":
-            if let name = json["name"] as? String, name == "updateTranscription" {
-                executeAction()
-            }
-            
-        case "response.function_call_arguments.delta",
-             "conversation.item.created":
+        case "response.function_call_arguments.done",
+             "response.function_call_arguments.delta",
+            "conversation.item.created":
             break
-            
-        default:
+             default:
             break
         }
-    }
-    
-    private func executeAction() {
-        print("executeAction has been called")
-        
-        let availableFunctions = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
-        
-        self.send([
-            "event_id": UUID().uuidString,
-            "type": "response.create",
-            "response": [
-                "tools": availableFunctions,
-                "tool_choice": "required",
-            ]
-        ])
     }
     
     private func handleResponseCompletion(json: [String: Any]) {
@@ -458,23 +480,6 @@ class OpenAIRealtimeAPI {
            let status = response["status"] as? String, status == "failed" {
             print("Response failed: \(response["status_details"] ?? "Unknown error")")
         }
-    }
-    
-    private func handleSpeechStarted() {
-        print("User started speaking.")
-    }
-    
-    private func handleSpeechEnded() {
-        print("User speech ended. Processing transcription...")
-        
-        send([
-            "event_id": UUID().uuidString,
-            "type": "response.create",
-            "response": [
-                "tools": [UPDATE_TRANSCRIPTION_FUNCTION],
-                "tool_choice": "required"
-            ]
-        ])
     }
     
     private func handleOutputItemCompletion(json: [String: Any]) {
@@ -487,11 +492,6 @@ class OpenAIRealtimeAPI {
             handleFunctionCall(functionName: functionName, 
                              argumentsString: argumentsString, 
                              callID: callID)
-        } else if let contentArray = item["content"] as? [[String: Any]],
-                  let content = contentArray.first,
-                  let transcript = content["transcript"] as? String {
-            print("Complete transcript: \(transcript)")
-            appState.appendTranscription(transcript)
         }
     }
 
@@ -501,10 +501,7 @@ class OpenAIRealtimeAPI {
             return
         }
         
-        if functionName != "updateTranscription" {
-            appState.appendAction(actionName: functionName)
-        }
-        
+        appState.appendAction(actionName: functionName)
         switch functionName {
         case "editPrompt":
             guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
@@ -516,18 +513,6 @@ class OpenAIRealtimeAPI {
             }
             handleEditPrompt(prompt: prompt, callID: callID)
             
-        case "updateTranscription":
-            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
-                  let text = argumentsDict["text"] as? String else {
-                print("Failed to parse updateTranscription arguments")
-                let errorOutput = "Error: Failed to parse the text argument"
-                sendFunctionOutputToModel(callID: callID, output: errorOutput)
-                return
-            }
-            let output = "Transcription appended"
-            appState.appendTranscription(text)
-            sendFunctionOutputToModel(callID: callID, output: output)
-
         case "sendPrompt":
             handleSendPrompt(callID: callID)
             
@@ -691,38 +676,33 @@ class OpenAIRealtimeAPI {
         key code 53 -- escape key
         """
         
+        // Clear the conversation context but maintain the system instructions
+        currentConversation = []
+        
+        // Re-add the system instructions
+        let systemMessage: [String: Any] = [
+            "role": "system",
+            "content": INSTRUCTIONS
+        ]
+        currentConversation.append(systemMessage)
+        
+        appState.clearTranscriptions()
+        appState.logEvent("FunctionCalling", "Cleared conversation context")
+        
         executeKeystrokesInTerminal(clearSequence, actionName: "clear", callID: callID)
     }
     
-    private func resetConnection() {
-            if self.audioEngine.isRunning {
-                self.audioEngine.inputNode.removeTap(onBus: 0)
-                self.audioEngine.stop()
-            }
-        webSocketTask?.cancel()
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                self.appState.clearTranscriptions()
-                self.appState.updateCurrentPrompt("")
-                self.connect()
-                print("Connection reset complete")
-            }
-    }
-    
     func sendFunctionOutputToModel(callID: String, output: String) {
-        let payload: [String: Any] = [
-            "type": "conversation.item.create",
-            "item": [
-                "type": "function_call_output",
-                "call_id": callID,
-                "output": output
-            ]
+        let functionCallOutput: [String: Any] = [
+            "type": "function_call_output",
+            "call_id": callID,
+            "output": output
         ]
         
-        send(payload)
+        // Just add the output to our conversation history
+        currentConversation.append(functionCallOutput)
     }
 }
-
 
 
 let problematicCharacters: [Character] = {
@@ -762,11 +742,14 @@ class TranscriptionAPI {
     private let audioEngine = AVAudioEngine()
     private let dispatchQueue = DispatchQueue(label: "com.transcription.api")
     private var appState: AppState
-    
+    private var functionCalling: FunctionCalling
     private var clientSecret: String?
     
-    init(appState: AppState) {
+    
+    // Alternative initializer that accepts an existing FunctionCalling instance
+    init(appState: AppState, functionCalling: FunctionCalling) {
         self.appState = appState
+        self.functionCalling = functionCalling
     }
     
     func connect() {
@@ -836,7 +819,7 @@ class TranscriptionAPI {
         let wsUrlString = "wss://api.openai.com/v1/realtime"
         
         guard let url = URL(string: wsUrlString) else {
-            print("Transcription API: Invalid WebSocket URL.")
+            print("Transcription API: Invalid WebSocket URL")
             return
         }
         
@@ -849,8 +832,6 @@ class TranscriptionAPI {
         print("Transcription API: WebSocket connected")
         setupAudioEngine()
     }
-    
-
     
     private func send(_ jsonObj: [String: Any]) {
         if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj),
@@ -936,26 +917,35 @@ class TranscriptionAPI {
                 switch eventType {
                 case "input_audio_buffer.speech_started":
                     print("Transcription API: User started speaking.")
+                    self.appState.logEvent("TranscriptionAPI", "User started speaking")
+                    // Start a new transcription for this speech segment
+                    self.appState.startNewTranscription()
                     
                 case "input_audio_buffer.speech_stopped":
                     print("Transcription API: User stopped speaking.")
+                    self.appState.logEvent("TranscriptionAPI", "User stopped speaking")
                     
                 case "conversation.item.input_audio_transcription.delta":
                     if let delta = json["delta"] as? String {
                        print("Transcription API: Delta transcript: \(delta)")
-                        self.appState.appendDeltaTranscription(delta)
+                       self.appState.appendDeltaTranscription(delta)
                     }
                     
                 case "conversation.item.input_audio_transcription.completed":
                     if let transcript = json["transcript"] as? String {
                         print("Transcription API: Complete transcript: \(transcript)")
+                        self.appState.logEvent("TranscriptionAPI", "Complete transcript: \(transcript)")
+                        self.appState.appendCompleteTranscription(transcript)
+                        self.functionCalling.processTranscription(transcript)
                     }
                     
                 case "error":
                     print("Transcription API: Error event: \(json)")
+                    self.appState.logEvent("TranscriptionAPI", "Error event: \(String(describing: json))")
                     
                 default:
                     print("Transcription API: Unhandled event type: \(eventType)")
+                    self.appState.logEvent("TranscriptionAPI", "Unhandled event type: \(eventType)")
                 }
             }
         }
@@ -965,6 +955,6 @@ class TranscriptionAPI {
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         webSocketTask?.cancel()
-        print("Transcription API: Disconnected.")
+        print("Transcription API: Disconnected")
     }
 }
