@@ -81,14 +81,45 @@ let CLEAR_FUNCTION: [String: Any] = [
     "parameters": EMPTY_PARAMS
 ]
 
-let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
+let SEARCH_QUERY_PROPERTY: [String: String] = [
+    "type": "string",
+    "description": "The web search query to execute"
+]
+
+let SEARCH_QUERY_PROPERTIES: [String: [String: String]] = [
+    "query": SEARCH_QUERY_PROPERTY
+]
+
+let CREATE_SEARCH_QUERY_PARAMS: [String: Any] = [
+    "type": "object", 
+    "properties": SEARCH_QUERY_PROPERTIES,
+    "required": ["query"]
+]
+
+let CREATE_SEARCH_QUERY_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "createSearchQuery",
+    "description": "Creates a web search query based on user input. The query is displayed on screen for user confirmation.",
+    "parameters": CREATE_SEARCH_QUERY_PARAMS
+]
+
+let EXECUTE_WEB_SEARCH_FUNCTION: [String: Any] = [
+    "type": "function",
+    "name": "executeWebSearch",
+    "description": "Executes a web search using the current query to find the latest information. Triggered by keyword 'search'.",
+    "parameters": EMPTY_PARAMS
+]
+
+let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION, CREATE_SEARCH_QUERY_FUNCTION, EXECUTE_WEB_SEARCH_FUNCTION]
 
 let INSTRUCTIONS = """
-Your task is to assist in hands-free voice control for coding using Claude Code CLI.
+Your task is to assist in hands-free voice control for coding using Claude Code CLI and web search.
 
 You will receive a transcription of the user's speech. Based on this transcription, execute exactly ONE of these actions:
    - editPrompt: Optimize the transcribed input into a clear prompt for Claude Code. Consider everything the user has said, without leaving anything out or adding anything new. This is just an optimization step. Treat subsequent transcriptions as potential corrections to the current prompt, not as entirely new prompts.
    - sendPrompt: Send the current prompt to Claude Code
+   - createSearchQuery: Create or update the web search query based on user input
+   - executeWebSearch: Execute a web search using the current query to find latest information
    - accept/reject: Execute accept or reject actions in Claude Code CLI 
    - arrowUp/arrowDown: Navigate in the CLI
    - escape: Cancel current actions
@@ -96,7 +127,9 @@ You will receive a transcription of the user's speech. Based on this transcripti
 
 Execute the most appropriate function based on the user's intent in the transcription.
 
-Example: If the transcription is "send this prompt to Claude" or just "send", use the sendPrompt function.
+Examples:
+- If the transcription is "send this prompt to Claude" or just "send", use the sendPrompt function.
+- If the transcription is "execute search" or "run search" or just "search", use the executeWebSearch function.
 """
 
 import SwiftUI
@@ -123,15 +156,45 @@ struct TranscriptionItem: Identifiable, Hashable {
 
 class AppState: ObservableObject {
     @Published var currentPrompt: String = ""
+    @Published var searchQuery: String = ""
+    @Published var searchResults: String = ""
     @Published var transcriptionItems: [TranscriptionItem] = []
     @Published var eventLogs: [String] = []
     let startTime = Date()
     private var currentDeltaTranscription: String = ""
     private var currentTranscriptionID: UUID? = nil
     
+    func log(_ source: String, _ message: String) {
+        let timeElapsed = Date().timeIntervalSince(startTime)
+        let logEntry = "[\(String(format: "%.3f", timeElapsed))s] [\(source)] \(message)"
+        
+        print(logEntry)
+        
+        DispatchQueue.main.async {
+            self.eventLogs.append(logEntry)
+            
+            // Keep only the last 100 events to prevent memory issues
+            if self.eventLogs.count > 100 {
+                self.eventLogs.removeFirst(self.eventLogs.count - 100)
+            }
+        }
+    }
+    
     func updateCurrentPrompt(_ prompt: String) {
         DispatchQueue.main.async {
             self.currentPrompt = prompt
+        }
+    }
+    
+    func updateSearchQuery(_ query: String) {
+        DispatchQueue.main.async {
+            self.searchQuery = query
+        }
+    }
+    
+    func updateSearchResults(_ results: String) {
+        DispatchQueue.main.async {
+            self.searchResults = results
         }
     }
     
@@ -209,17 +272,7 @@ class AppState: ObservableObject {
     }
     
     func logEvent(_ source: String, _ event: String) {
-        let timeElapsed = Date().timeIntervalSince(startTime)
-        let logEntry = "[\(String(format: "%.3f", timeElapsed))s] [\(source)] \(event)"
-        
-        DispatchQueue.main.async {
-            self.eventLogs.append(logEntry)
-            
-            // Keep only the last 100 events to prevent memory issues
-            if self.eventLogs.count > 100 {
-                self.eventLogs.removeFirst(self.eventLogs.count - 100)
-            }
-        }
+        log(source, event)
     }
     
     func clearTranscriptions() {
@@ -258,11 +311,11 @@ struct VoiceControlledMacApp: App {
     }
     
     func requestMicrophonePermissions() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
+        AVCaptureDevice.requestAccess(for: .audio) { [self] granted in
             if granted {
-                print("Microphone permissions granted!")
+                self.appState.log("App", "Microphone permissions granted!")
             } else {
-                print("Microphone permissions not granted.")
+                self.appState.log("App", "Microphone permissions not granted.")
             }
         }
     }
@@ -282,6 +335,34 @@ struct ContentView: View {
                         Text(appState.currentPrompt.isEmpty ? "(No prompt yet)" : appState.currentPrompt)
                             .font(.body)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    
+                    Divider()
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Web Search:")
+                            .font(.headline)
+                        
+                        HStack {
+                            Text("Query: ")
+                                .font(.subheadline)
+                            
+                            Text(appState.searchQuery.isEmpty ? "What's happening in tech today?" : appState.searchQuery)
+                                .font(.body)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        
+                        if !appState.searchResults.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Results:")
+                                    .font(.subheadline)
+                                
+                                Text(appState.searchResults)
+                                    .font(.body)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.top, 4)
+                        }
                     }
                     
                     if !appState.transcriptionItems.isEmpty {
@@ -352,7 +433,7 @@ class FunctionCalling {
     }
     
     func processTranscription(_ transcript: String) {
-        print("Processing transcription for function calling: \(transcript)")
+        appState.log("FunctionCalling", "Processing transcription: \(transcript)")
         
         // Add the user's message to the conversation
         let userMessage: [String: Any] = [
@@ -381,7 +462,7 @@ class FunctionCalling {
             "tool_choice": "required"
         ]
         
-        appState.logEvent("FunctionCalling", "Sending request to Responses API")
+        appState.log("FunctionCalling", "Sending request to Responses API")
         
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
@@ -391,41 +472,37 @@ class FunctionCalling {
                 guard let self = self else { return }
                 
                 if let error = error {
-                    print("Error calling Responses API: \(error)")
-                    self.appState.logEvent("FunctionCalling", "API error: \(error)")
+                    self.appState.log("FunctionCalling", "Error calling Responses API: \(error)")
                     return
                 }
                 
                 guard let data = data else {
-                    print("No data received from API")
-                    self.appState.logEvent("FunctionCalling", "No data received")
+                    self.appState.log("FunctionCalling", "No data received from API")
                     return
                 }
                 
-                self.appState.logEvent("FunctionCalling", "Response received")
+                self.appState.log("FunctionCalling", "Response received")
                 self.handleResponsesAPIResult(data)
             }
             
             task.resume()
         } catch {
-            print("Error creating request: \(error)")
-            appState.logEvent("FunctionCalling", "Error creating request: \(error)")
+            appState.log("FunctionCalling", "Error creating request: \(error)")
         }
     }
     
     private func handleResponsesAPIResult(_ data: Data) {
         do {
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                print("Failed to parse API response")
-                appState.logEvent("FunctionCalling", "Failed to parse API response")
+                appState.log("FunctionCalling", "Failed to parse API response")
                 return
             }
             
-            print("Responses API result: \(json)")
+            appState.log("FunctionCalling", "Responses API result received")
             
             // Extract function calls from the output
             if let output = json["output"] as? [[String: Any]] {
-                appState.logEvent("FunctionCalling", "Retrieved \(output.count) output items")
+                appState.log("FunctionCalling", "Retrieved \(output.count) output items")
                 
                 for item in output {
                     if let type = item["type"] as? String, type == "function_call",
@@ -433,7 +510,7 @@ class FunctionCalling {
                        let functionName = item["name"] as? String,
                        let argumentsString = item["arguments"] as? String {
                         
-                        appState.logEvent("FunctionCalling", "Function call: \(functionName)")
+                        appState.log("FunctionCalling", "Function call: \(functionName)")
                         
                         // Handle the function call
                         handleFunctionCall(functionName: functionName, 
@@ -443,15 +520,14 @@ class FunctionCalling {
                         // Add this call to our conversation
                         currentConversation.append(item)
                     } else {
-                        appState.logEvent("FunctionCalling", "Non-function output item: \(item["type"] as? String ?? "unknown")")
+                        appState.log("FunctionCalling", "Non-function output item: \(item["type"] as? String ?? "unknown")")
                     }
                 }
             } else {
-                appState.logEvent("FunctionCalling", "No output items in response")
+                appState.log("FunctionCalling", "No output items in response")
             }
         } catch {
-            print("Error processing API response: \(error)")
-            appState.logEvent("FunctionCalling", "Error processing API response: \(error)")
+            appState.log("FunctionCalling", "Error processing API response: \(error)")
         }
     }
     
@@ -464,7 +540,7 @@ class FunctionCalling {
             handleOutputItemCompletion(json: json)
             
         case "error":
-            print("Error event: \(json)")
+            appState.log("FunctionCalling", "Error event: \(json)")
             
         case "response.function_call_arguments.done",
              "response.function_call_arguments.delta",
@@ -478,7 +554,7 @@ class FunctionCalling {
     private func handleResponseCompletion(json: [String: Any]) {
         if let response = json["response"] as? [String: Any],
            let status = response["status"] as? String, status == "failed" {
-            print("Response failed: \(response["status_details"] ?? "Unknown error")")
+            appState.log("FunctionCalling", "Response failed: \(response["status_details"] ?? "Unknown error")")
         }
     }
     
@@ -497,7 +573,7 @@ class FunctionCalling {
 
     private func handleFunctionCall(functionName: String, argumentsString: String, callID: String) {
         guard let argumentsData = argumentsString.data(using: .utf8) else {
-            print("Failed to convert arguments string to data")
+            appState.log("FunctionCalling", "Failed to convert arguments string to data")
             return
         }
         
@@ -506,12 +582,25 @@ class FunctionCalling {
         case "editPrompt":
             guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
                   let prompt = argumentsDict["prompt"] as? String else {
-                print("Failed to parse editPrompt arguments")
+                appState.log("FunctionCalling", "Failed to parse editPrompt arguments")
                 let errorOutput = "Error: Failed to parse the prompt argument"
                 sendFunctionOutputToModel(callID: callID, output: errorOutput)
                 return
             }
             handleEditPrompt(prompt: prompt, callID: callID)
+            
+        case "createSearchQuery":
+            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
+                  let query = argumentsDict["query"] as? String else {
+                appState.log("FunctionCalling", "Failed to parse createSearchQuery arguments")
+                let errorOutput = "Error: Failed to parse the query argument"
+                sendFunctionOutputToModel(callID: callID, output: errorOutput)
+                return
+            }
+            handleCreateSearchQuery(query: query, callID: callID)
+            
+        case "executeWebSearch":
+            handleExecuteWebSearch(callID: callID)
             
         case "sendPrompt":
             handleSendPrompt(callID: callID)
@@ -535,12 +624,12 @@ class FunctionCalling {
             handleClear(callID: callID)
             
         default:
-            print("Unknown function: \(functionName)")
+            appState.log("FunctionCalling", "Unknown function: \(functionName)")
         }
     }
     
     func sendCommandToClaudeTerminal(_ command: String) throws {
-        print("Preparing to inject command into active terminal...")
+        appState.log("FunctionCalling", "Preparing to inject command into active terminal...")
         
         let script = """
         tell application "Terminal"
@@ -569,12 +658,12 @@ class FunctionCalling {
             )
         }
         
-        print("Command sent to terminal: \(command)")
+        appState.log("FunctionCalling", "Command sent to terminal: \(command)")
         appState.updateCurrentPrompt("")
     }
     
     func handleEditPrompt(prompt: String, callID: String) {
-        print("Updating prompt: \(prompt)")
+        appState.log("FunctionCalling", "Updating prompt: \(prompt)")
         
         appState.updateCurrentPrompt(prompt)
         
@@ -589,7 +678,7 @@ class FunctionCalling {
             return
         }
         
-        print("Sending prompt to Claude: \(appState.currentPrompt)")
+        appState.log("FunctionCalling", "Sending prompt to Claude: \(appState.currentPrompt)")
         
         do {
             try sendCommandToClaudeTerminal(appState.currentPrompt)
@@ -599,12 +688,12 @@ class FunctionCalling {
         } catch {
             let errorOutput = "Error sending the prompt to Claude Code: \(error.localizedDescription)"
             sendFunctionOutputToModel(callID: callID, output: errorOutput)
-            print("Error passed back to model: \(error)")
+            appState.log("FunctionCalling", "Error passed back to model: \(error)")
         }
     }
     
     private func executeKeystrokesInTerminal(_ keystrokeCommands: String, actionName: String, callID: String) {
-        print("Executing \(actionName) keystrokes")
+        appState.log("FunctionCalling", "Executing \(actionName) keystrokes")
         
         do {
             let fullScript = """
@@ -631,11 +720,11 @@ class FunctionCalling {
                 )
             }
             
-            print("\(actionName) keystrokes executed successfully")
+            appState.log("FunctionCalling", "\(actionName) keystrokes executed successfully")
             let output = "\(actionName) command executed successfully"
             sendFunctionOutputToModel(callID: callID, output: output)
         } catch {
-            print("Error executing \(actionName) command: \(error)")
+            appState.log("FunctionCalling", "Error executing \(actionName) command: \(error)")
             let output = "Error executing \(actionName) command: \(error.localizedDescription)"
             sendFunctionOutputToModel(callID: callID, output: output)
         }
@@ -686,10 +775,179 @@ class FunctionCalling {
         ]
         currentConversation.append(systemMessage)
         
-        appState.clearTranscriptions()
-        appState.logEvent("FunctionCalling", "Cleared conversation context")
+        // Clear the web search results file
+        clearWebSearchResultsFile()
         
-        executeKeystrokesInTerminal(clearSequence, actionName: "clear", callID: callID)
+        // Clear UI elements
+        appState.updateSearchQuery("")
+        appState.updateSearchResults("")
+        appState.clearTranscriptions()
+        
+        appState.log("FunctionCalling", "Cleared conversation context and search history")
+        
+        let output = "Interface, conversation context, and search history cleared"
+        sendFunctionOutputToModel(callID: callID, output: output)
+    }
+    
+    private func clearWebSearchResultsFile() {
+        let fileManager = FileManager.default
+        let baseDir = fileManager.homeDirectoryForCurrentUser.path
+        let filePath = "\(baseDir)/Documents/BetterVoiceControl-dev/web_search_results"
+        
+        do {
+            // Write an empty string to the file to clear it
+            try "".write(toFile: filePath, atomically: true, encoding: .utf8)
+            appState.log("WebSearch", "Search history file cleared")
+        } catch {
+            appState.log("WebSearch", "ERROR: Failed to clear search history file: \(error.localizedDescription)")
+        }
+    }
+    
+    func handleCreateSearchQuery(query: String, callID: String) {
+        appState.log("FunctionCalling", "Creating search query: \(query)")
+        
+        appState.updateSearchQuery(query)
+        
+        let output = "Search query created successfully"
+        sendFunctionOutputToModel(callID: callID, output: output)
+    }
+    
+    func handleExecuteWebSearch(callID: String) {
+        if appState.searchQuery.isEmpty {
+            let output = "Error: No search query available to execute"
+            sendFunctionOutputToModel(callID: callID, output: output)
+            return
+        }
+        
+        appState.log("FunctionCalling", "Executing web search: \(appState.searchQuery)")
+        
+        // Execute web search using the Responses API
+        executeWebSearch(query: appState.searchQuery) { [weak self] results in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                self.appState.updateSearchResults(results)
+                
+                // Append search results to a file
+                self.appendToSearchResultsFile(query: self.appState.searchQuery, results: results)
+                
+                let output = "Web search completed successfully"
+                self.sendFunctionOutputToModel(callID: callID, output: output)
+            }
+        }
+    }
+    
+    private func appendToSearchResultsFile(query: String, results: String) {
+        let fileManager = FileManager.default
+        let baseDir = fileManager.homeDirectoryForCurrentUser.path
+        let filePath = "\(baseDir)/Documents/BetterVoiceControl-dev/web_search_results"
+        
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let content = """
+        
+        --------- SEARCH: \(timestamp) ---------
+        Query: \(query)
+        
+        Results:
+        \(results)
+        
+        """
+        
+        self.appState.log("WebSearch", "Saving results to \(filePath)")
+        
+        if let fileHandle = FileHandle(forWritingAtPath: filePath) {
+            do {
+                fileHandle.seekToEndOfFile()
+                if let data = content.data(using: .utf8) {
+                    fileHandle.write(data)
+                } else {
+                    self.appState.log("WebSearch", "ERROR: Failed to convert content to data")
+                }
+                fileHandle.closeFile()
+            } catch {
+                self.appState.log("WebSearch", "ERROR: Failed to write to existing file: \(error.localizedDescription)")
+            }
+        } else {
+            do {
+                try content.write(toFile: filePath, atomically: true, encoding: .utf8)
+            } catch {
+                self.appState.log("WebSearch", "ERROR: Failed to create file: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func executeWebSearch(query: String, completion: @escaping (String) -> Void) {
+        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
+        let url = URL(string: "https://api.openai.com/v1/responses")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let requestBody: [String: Any] = [
+            "model": "gpt-4o",
+            "tools": [["type": "web_search_preview"]],
+            "input": query
+        ]
+        
+        appState.log("WebSearch", "Sending search request to API")
+        
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
+            request.httpBody = jsonData
+            
+            let task = session.dataTask(with: request) { [weak self] data, response, error in
+                guard let self = self else { return }
+                
+                if let error = error {
+                    self.appState.log("WebSearch", "API error: \(error)")
+                    completion("Error: \(error.localizedDescription)")
+                    return
+                }
+                
+                guard let data = data else {
+                    self.appState.log("WebSearch", "No data received")
+                    completion("Error: No data received from search")
+                    return
+                }
+                
+                self.appState.log("WebSearch", "Search response received")
+                
+                do {
+                    guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        self.appState.log("WebSearch", "Failed to parse API response")
+                        completion("Error: Failed to parse search results")
+                        return
+                    }
+                    
+                    // Extract the search results text
+                    if let output = json["output"] as? [[String: Any]] {
+                        for item in output {
+                            if let type = item["type"] as? String, type == "message",
+                               let content = item["content"] as? [[String: Any]],
+                               let firstContent = content.first,
+                               let resultText = firstContent["text"] as? String {
+                                
+                                completion(resultText)
+                                return
+                            }
+                        }
+                    }
+                    
+                    // If we couldn't extract the text
+                    completion("Search completed, but couldn't extract results")
+                } catch {
+                    self.appState.log("WebSearch", "Error processing API response: \(error)")
+                    completion("Error processing search results: \(error.localizedDescription)")
+                }
+            }
+            
+            task.resume()
+        } catch {
+            self.appState.log("WebSearch", "Error creating request: \(error)")
+            completion("Error: \(error.localizedDescription)")
+        }
     }
     
     func sendFunctionOutputToModel(callID: String, output: String) {
@@ -757,7 +1015,7 @@ class TranscriptionAPI {
         let sessionsUrlString = "https://api.openai.com/v1/realtime/transcription_sessions"
         
         guard let url = URL(string: sessionsUrlString) else {
-            print("Transcription API: Invalid sessions URL.")
+            appState.log("TranscriptionAPI", "Invalid sessions URL.")
             return
         }
         
@@ -788,28 +1046,28 @@ class TranscriptionAPI {
             guard let self = self else { return }
             
             if let error = error {
-                print("Transcription API: Error creating session: \(error)")
+                self.appState.log("TranscriptionAPI", "Error creating session: \(error)")
                 return
             }
             
             if let data = data, let responseString = String(data: data, encoding: .utf8) {
-                print("Transcription API: Session created response: \(responseString)")
+                self.appState.log("TranscriptionAPI", "Session created response: \(responseString)")
                 
                 do {
                     if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
                         if let secretObj = json["client_secret"] as? [String: Any],
                            let secretValue = secretObj["value"] as? String {
                             self.clientSecret = secretValue
-                            print("Transcription API: Client secret received")
+                            self.appState.log("TranscriptionAPI", "Client secret received")
                             self.connectWebSocket(clientSecret: secretValue)
                         } else {
-                            print("Transcription API: No client_secret value in response")
+                            self.appState.log("TranscriptionAPI", "No client_secret value in response")
                         }
                     } else {
-                        print("Transcription API: Invalid JSON response")
+                        self.appState.log("TranscriptionAPI", "Invalid JSON response")
                     }
                 } catch {
-                    print("Transcription API: Error parsing session response: \(error)")
+                    self.appState.log("TranscriptionAPI", "Error parsing session response: \(error)")
                 }
             }
         }.resume()
@@ -819,7 +1077,7 @@ class TranscriptionAPI {
         let wsUrlString = "wss://api.openai.com/v1/realtime"
         
         guard let url = URL(string: wsUrlString) else {
-            print("Transcription API: Invalid WebSocket URL")
+            appState.log("TranscriptionAPI", "Invalid WebSocket URL")
             return
         }
         
@@ -829,16 +1087,17 @@ class TranscriptionAPI {
         webSocketTask = URLSession(configuration: .default).webSocketTask(with: request)
         webSocketTask!.resume()
         
-        print("Transcription API: WebSocket connected")
+        appState.log("TranscriptionAPI", "WebSocket connected")
         setupAudioEngine()
     }
     
     private func send(_ jsonObj: [String: Any]) {
         if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj),
            let jsonString = String(data: jsonData, encoding: .utf8) {
-            webSocketTask!.send(.string(jsonString)) { error in
+            webSocketTask!.send(.string(jsonString)) { [weak self] error in
+                guard let self = self else { return }
                 if let error = error {
-                    print("Transcription API: Error sending json: \(error)")
+                    self.appState.log("TranscriptionAPI", "Error sending json: \(error)")
                 }
             }
         }
@@ -848,7 +1107,7 @@ class TranscriptionAPI {
         let inputNode = audioEngine.inputNode
         
         let inputFormat = inputNode.inputFormat(forBus: 0)
-        print("Transcription API: Input format - \(inputFormat)")
+        appState.log("TranscriptionAPI", "Input format - \(inputFormat)")
         let desiredSampleRate: Double = 24000.0
         
         let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: desiredSampleRate, channels: 1, interleaved: true)!
@@ -861,10 +1120,10 @@ class TranscriptionAPI {
         
         do {
             try audioEngine.start()
-            print("Transcription API: Audio engine started.")
+            appState.log("TranscriptionAPI", "Audio engine started.")
             receiveResponse()
         } catch {
-            print("Transcription API: Audio engine couldn't start: \(error)")
+            appState.log("TranscriptionAPI", "Audio engine couldn't start: \(error)")
         }
     }
     
@@ -880,9 +1139,10 @@ class TranscriptionAPI {
         }
         """
         
-        webSocketTask?.send(.string(message)) { error in
+        webSocketTask?.send(.string(message)) { [weak self] error in
+            guard let self = self else { return }
             if let error = error {
-                print("Transcription API: Error sending audio chunk: \(error)")
+                self.appState.log("TranscriptionAPI", "Error sending audio chunk: \(error)")
             }
         }
     }
@@ -893,14 +1153,14 @@ class TranscriptionAPI {
             
             switch result {
             case .failure(let error):
-                print("Transcription API: Error receiving response: \(error)")
+                self.appState.log("TranscriptionAPI", "Error receiving response: \(error)")
                 
             case .success(let message):
                 guard case .string(let text) = message else {
                     if case .data(let data) = message {
-                        print("Transcription API: Received data message of size: \(data.count) bytes.")
+                        self.appState.log("TranscriptionAPI", "Received data message of size: \(data.count) bytes.")
                     } else {
-                        print("Transcription API: Unknown message type received.")
+                        self.appState.log("TranscriptionAPI", "Unknown message type received.")
                     }
                     return
                 }
@@ -908,44 +1168,38 @@ class TranscriptionAPI {
                 guard let data = text.data(using: .utf8),
                       let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
                       let eventType = json["type"] as? String else {
-                    print("Transcription API: JSON is not of expected format.")
+                    self.appState.log("TranscriptionAPI", "JSON is not of expected format.")
                     return
                 }
-                print("Transcription API: Event type: \(eventType)")
-                print("Transcription API: Full response: \(json)")
+                self.appState.log("TranscriptionAPI", "Event type: \(eventType)")
+                self.appState.log("TranscriptionAPI", "Full response: \(json)")
                 
                 switch eventType {
                 case "input_audio_buffer.speech_started":
-                    print("Transcription API: User started speaking.")
-                    self.appState.logEvent("TranscriptionAPI", "User started speaking")
+                    self.appState.log("TranscriptionAPI", "User started speaking")
                     // Start a new transcription for this speech segment
                     self.appState.startNewTranscription()
                     
                 case "input_audio_buffer.speech_stopped":
-                    print("Transcription API: User stopped speaking.")
-                    self.appState.logEvent("TranscriptionAPI", "User stopped speaking")
+                    self.appState.log("TranscriptionAPI", "User stopped speaking")
                     
                 case "conversation.item.input_audio_transcription.delta":
                     if let delta = json["delta"] as? String {
-                       print("Transcription API: Delta transcript: \(delta)")
                        self.appState.appendDeltaTranscription(delta)
                     }
                     
                 case "conversation.item.input_audio_transcription.completed":
                     if let transcript = json["transcript"] as? String {
-                        print("Transcription API: Complete transcript: \(transcript)")
-                        self.appState.logEvent("TranscriptionAPI", "Complete transcript: \(transcript)")
+                        self.appState.log("TranscriptionAPI", "Complete transcript: \(transcript)")
                         self.appState.appendCompleteTranscription(transcript)
                         self.functionCalling.processTranscription(transcript)
                     }
                     
                 case "error":
-                    print("Transcription API: Error event: \(json)")
-                    self.appState.logEvent("TranscriptionAPI", "Error event: \(String(describing: json))")
+                    self.appState.log("TranscriptionAPI", "Error event: \(json)")
                     
                 default:
-                    print("Transcription API: Unhandled event type: \(eventType)")
-                    self.appState.logEvent("TranscriptionAPI", "Unhandled event type: \(eventType)")
+                    self.appState.log("TranscriptionAPI", "Unhandled event type: \(eventType)")
                 }
             }
         }
@@ -955,6 +1209,6 @@ class TranscriptionAPI {
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         webSocketTask?.cancel()
-        print("Transcription API: Disconnected")
+        appState.log("TranscriptionAPI", "Disconnected")
     }
 }
