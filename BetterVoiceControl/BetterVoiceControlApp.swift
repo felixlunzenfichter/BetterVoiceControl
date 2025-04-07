@@ -995,6 +995,20 @@ extension String {
     }
 }
 
+extension UInt16 {
+    var bytes: Data {
+        var value = self.littleEndian
+        return Data(bytes: &value, count: MemoryLayout<UInt16>.size)
+    }
+}
+
+extension UInt32 {
+    var bytes: Data {
+        var value = self.littleEndian
+        return Data(bytes: &value, count: MemoryLayout<UInt32>.size)
+    }
+}
+
 class TranscriptionAPI {
     private var webSocketTask: URLSessionWebSocketTask?
     private let audioEngine = AVAudioEngine()
@@ -1002,12 +1016,113 @@ class TranscriptionAPI {
     private var appState: AppState
     private var functionCalling: FunctionCalling
     private var clientSecret: String?
-    
+    private var audioBuffers: [Data] = []
+    private var audioPlayer: AVAudioPlayer?
+    private var isSpeaking: Bool = false
+    private var enableAudioPlayback: Bool = false  // Set to true to enable audio playback
     
     // Alternative initializer that accepts an existing FunctionCalling instance
     init(appState: AppState, functionCalling: FunctionCalling) {
         self.appState = appState
         self.functionCalling = functionCalling
+    }
+    
+    // Convert audio buffer to the target format (24000 Hz, 16-bit PCM, mono)
+    private func convertToTargetAudioFormat(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer {
+        // Check if we can directly access the input buffer's channel data
+        if buffer.format.commonFormat == .pcmFormatInt16 && buffer.int16ChannelData == nil {
+            appState.log("AudioConverter", "WARNING: Buffer is in int16 format but channel data is nil")
+        }
+        
+        // Target sample rate is 24000 Hz to match the recording format
+        let targetSampleRate: Double = 24000.0
+        
+        // If already at 24000 Hz with accessible int16 channel data, return as is
+        if buffer.format.sampleRate == targetSampleRate && 
+           buffer.format.commonFormat == .pcmFormatInt16 && 
+           buffer.int16ChannelData != nil {
+            return buffer
+        }
+        
+        // Create a two-step conversion if needed
+        // If not already in a PCM format that's easily convertible to int16, first convert to float32
+        var intermediateBuffer = buffer
+        if buffer.format.commonFormat != .pcmFormatInt16 && buffer.format.commonFormat != .pcmFormatFloat32 {
+            let floatFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, 
+                                            sampleRate: buffer.format.sampleRate,
+                                            channels: buffer.format.channelCount, 
+                                            interleaved: false)!
+            
+            guard let floatConverter = AVAudioConverter(from: buffer.format, to: floatFormat) else {
+                appState.log("AudioConverter", "ERROR: Failed to create intermediate converter, using original buffer")
+                return buffer
+            }
+            
+            guard let floatBuffer = AVAudioPCMBuffer(pcmFormat: floatFormat, frameCapacity: buffer.frameLength) else {
+                appState.log("AudioConverter", "ERROR: Failed to create intermediate buffer, using original buffer")
+                return buffer
+            }
+            
+            var floatError: NSError?
+            floatConverter.convert(to: floatBuffer, error: &floatError) { _, status in
+                status.pointee = .haveData
+                return buffer
+            }
+            
+            if let error = floatError {
+                appState.log("AudioConverter", "ERROR: Intermediate conversion failed: \(error), using original buffer")
+                return buffer
+            }
+            
+            intermediateBuffer = floatBuffer
+        }
+        
+        // Create target format - 24000 Hz, mono, 16-bit PCM, interleaved
+        let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, 
+                                        sampleRate: targetSampleRate, 
+                                        channels: 1, 
+                                        interleaved: true)!
+        
+        // Create final converter
+        guard let converter = AVAudioConverter(from: intermediateBuffer.format, to: targetFormat) else {
+            appState.log("AudioConverter", "ERROR: Failed to create target converter, using original buffer")
+            return buffer
+        }
+        
+        // Calculate new buffer size based on ratio of sample rates and round up
+        let ratio = targetSampleRate / intermediateBuffer.format.sampleRate
+        let newFrameCapacity = AVAudioFrameCount(ceil(Double(intermediateBuffer.frameLength) * ratio))
+        
+        // Create output buffer
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: newFrameCapacity) else {
+            appState.log("AudioConverter", "ERROR: Failed to create output buffer, using original buffer")
+            return buffer
+        }
+        
+        // Convert to target format
+        var error: NSError?
+        let finalConversion = converter.convert(to: outputBuffer, error: &error) { _, status in
+            status.pointee = .haveData
+            return intermediateBuffer
+        }
+        
+        if error != nil {
+            appState.log("AudioConverter", "ERROR: Final conversion failed: \(error?.localizedDescription ?? "unknown error"), using original buffer")
+            return buffer
+        }
+        
+        // Verify output buffer has data and int16 channel data is accessible
+        if outputBuffer.frameLength == 0 {
+            appState.log("AudioConverter", "ERROR: Output buffer has zero frames, using original buffer")
+            return buffer
+        }
+        
+        if outputBuffer.int16ChannelData == nil {
+            appState.log("AudioConverter", "ERROR: Output buffer has nil int16ChannelData, using original buffer")
+            return buffer
+        }
+        
+        return outputBuffer
     }
     
     func connect() {
@@ -1106,13 +1221,23 @@ class TranscriptionAPI {
     private func setupAudioEngine() {
         let inputNode = audioEngine.inputNode
         
+        // Use native input format - no format conversion during recording
         let inputFormat = inputNode.inputFormat(forBus: 0)
-        appState.log("TranscriptionAPI", "Input format - \(inputFormat)")
-        let desiredSampleRate: Double = 24000.0
+        appState.log("TranscriptionAPI", """
+        Input format details:
+        - Sample rate: \(inputFormat.sampleRate) Hz
+        - Channels: \(inputFormat.channelCount)
+        - Format ID: \(inputFormat.streamDescription.pointee.mFormatID)
+        - Format flags: \(inputFormat.streamDescription.pointee.mFormatFlags)
+        - Bytes per packet: \(inputFormat.streamDescription.pointee.mBytesPerPacket)
+        - Frames per packet: \(inputFormat.streamDescription.pointee.mFramesPerPacket)
+        - Bytes per frame: \(inputFormat.streamDescription.pointee.mBytesPerFrame)
+        - Channels per frame: \(inputFormat.streamDescription.pointee.mChannelsPerFrame)
+        - Bits per channel: \(inputFormat.streamDescription.pointee.mBitsPerChannel)
+        """)
         
-        let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: desiredSampleRate, channels: 1, interleaved: true)!
-        
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: audioFormat) { buffer, time in
+        // Install tap with native format
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
             self.sendAudioChunk(buffer: buffer)
         }
         
@@ -1128,8 +1253,22 @@ class TranscriptionAPI {
     }
     
     private func sendAudioChunk(buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.int16ChannelData?[0] else { return }
-        let data = Data(bytes: channelData, count: Int(buffer.frameLength * buffer.format.streamDescription.pointee.mBytesPerFrame))
+        // Convert input buffer to target format for API (24000 Hz, mono, 16-bit PCM)
+        var buffer = convertToTargetAudioFormat(buffer)
+        
+        guard let channelData = buffer.int16ChannelData?[0] else {
+            appState.log("AudioProcessing", "ERROR: Failed to get channel data from buffer")
+            return
+        }
+        
+        let dataSize = Int(buffer.frameLength * buffer.format.streamDescription.pointee.mBytesPerFrame)
+        let data = Data(bytes: channelData, count: dataSize)
+        
+        // Store audio buffer for playback testing only when speaking is active and playback is enabled
+        if isSpeaking && enableAudioPlayback {
+            audioBuffers.append(data)
+        }
+        
         let base64Audio = data.base64EncodedString()
         
         let message = """
@@ -1142,7 +1281,7 @@ class TranscriptionAPI {
         webSocketTask?.send(.string(message)) { [weak self] error in
             guard let self = self else { return }
             if let error = error {
-                self.appState.log("TranscriptionAPI", "Error sending audio chunk: \(error)")
+                self.appState.log("AudioProcessing", "ERROR: Failed to send audio chunk: \(error)")
             }
         }
     }
@@ -1171,17 +1310,27 @@ class TranscriptionAPI {
                     self.appState.log("TranscriptionAPI", "JSON is not of expected format.")
                     return
                 }
-                self.appState.log("TranscriptionAPI", "Event type: \(eventType)")
-                self.appState.log("TranscriptionAPI", "Full response: \(json)")
+                // Only log certain event types to avoid console spam
+                if eventType != "conversation.item.input_audio_transcription.delta" {
+                    self.appState.log("TranscriptionAPI", "Event type: \(eventType)")
+                }
                 
                 switch eventType {
                 case "input_audio_buffer.speech_started":
                     self.appState.log("TranscriptionAPI", "User started speaking")
+                    // Set speaking flag to true
+                    self.isSpeaking = true
                     // Start a new transcription for this speech segment
                     self.appState.startNewTranscription()
                     
                 case "input_audio_buffer.speech_stopped":
                     self.appState.log("TranscriptionAPI", "User stopped speaking")
+                    // Set speaking flag to false
+                    self.isSpeaking = false
+                    // Only call playback function if audio playback is enabled
+                    if self.enableAudioPlayback {
+                        self.playbackRecordedAudio()
+                    }
                     
                 case "conversation.item.input_audio_transcription.delta":
                     if let delta = json["delta"] as? String {
@@ -1203,6 +1352,95 @@ class TranscriptionAPI {
                 }
             }
         }
+    }
+    
+    private func playbackRecordedAudio() {
+        guard !audioBuffers.isEmpty else {
+            return
+        }
+        
+        // Calculate total size
+        let totalSize = audioBuffers.reduce(0) { $0 + $1.count }
+        guard totalSize > 0 else {
+            return
+        }
+        
+        // Create a temporary WAV file for playback
+        let fileManager = FileManager.default
+        let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let tempFileURL = documentsPath.appendingPathComponent("playback_test.pcm")
+        
+        // Combine all audio data
+        var combinedData = Data()
+        for buffer in audioBuffers {
+            combinedData.append(buffer)
+        }
+        
+        do {
+            // Write raw PCM data to file
+            try combinedData.write(to: tempFileURL)
+            
+            // Create audio file with correct format
+            let outputURL = documentsPath.appendingPathComponent("playback_test.wav")
+            
+            // Create WAV file header structure
+            let sampleRate: UInt32 = 24000
+            let channelCount: UInt16 = 1
+            let bitsPerSample: UInt16 = 16
+            let byteRate = sampleRate * UInt32(channelCount * bitsPerSample / 8)
+            let blockAlign = channelCount * bitsPerSample / 8
+            
+            var header = Data()
+            
+            // RIFF chunk
+            header.append(contentsOf: "RIFF".utf8)
+            let fileSize = UInt32(combinedData.count + 36)
+            header.append(fileSize.littleEndian.bytes)
+            header.append(contentsOf: "WAVE".utf8)
+            
+            // fmt chunk
+            header.append(contentsOf: "fmt ".utf8)
+            header.append(UInt32(16).littleEndian.bytes)
+            header.append(UInt16(1).littleEndian.bytes)  // PCM format
+            header.append(channelCount.littleEndian.bytes)
+            header.append(sampleRate.littleEndian.bytes)
+            header.append(byteRate.littleEndian.bytes)
+            header.append(blockAlign.littleEndian.bytes)
+            header.append(bitsPerSample.littleEndian.bytes)
+            
+            // data chunk
+            header.append(contentsOf: "data".utf8)
+            header.append(UInt32(combinedData.count).littleEndian.bytes)
+            
+            // Combine header and PCM data
+            var wavData = Data()
+            wavData.append(header)
+            wavData.append(combinedData)
+            
+            // Write WAV file
+            try wavData.write(to: outputURL)
+            
+            // Play using AVAudioPlayer
+            audioPlayer = try AVAudioPlayer(contentsOf: outputURL)
+            if audioPlayer == nil {
+                appState.log("AudioPlayback", "ERROR: Failed to create audio player")
+                return
+            }
+            
+            audioPlayer?.prepareToPlay()
+            if !(audioPlayer?.play() ?? false) {
+                appState.log("AudioPlayback", "ERROR: Failed to start audio playback")
+                return
+            }
+            
+        } catch {
+            appState.log("AudioPlayback", "ERROR: Failed to create or play audio: \(error)")
+            // Keep buffers if playback fails
+            return
+        }
+        
+        // Buffers successfully played, clear them
+        audioBuffers.removeAll()
     }
     
     func disconnect() {
