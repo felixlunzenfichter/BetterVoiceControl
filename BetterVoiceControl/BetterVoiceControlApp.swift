@@ -977,7 +977,11 @@ let problematicCharacters: [Character] = {
 
 extension String {
     func escapeForAppleScript() -> String {
-        var escaped = self
+        // First, replace double quotes with single quotes for Claude Code compatibility
+        var cleaned = self.replacingOccurrences(of: "\"", with: "'")
+        
+        // Then do the regular AppleScript escaping
+        var escaped = cleaned
         for char in problematicCharacters {
             let replacement: String
             switch char {
