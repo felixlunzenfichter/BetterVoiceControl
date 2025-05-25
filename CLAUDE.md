@@ -21,14 +21,8 @@
 - Store OpenAI API key in environment variables or Xcode build configuration
 - Never commit API keys to the repository
 
-## Web Search Integration
-- Use the Responses API with web_search_preview tool
-- Sample query to display below the prompt in UI: "What's happening in tech today?"
-- Enable web search using the following function call:
-```swift
-client.responses.create(
-    model: "gpt-4o",
-    tools: [["type": "web_search_preview"]],
-    input: userQuery
-)
-```
+## Voice Control Features
+- Real-time voice transcription using OpenAI Realtime API
+- Voice commands for Claude Code CLI navigation
+- Hands-free prompt editing and sending
+- Terminal control integration via AppleScript

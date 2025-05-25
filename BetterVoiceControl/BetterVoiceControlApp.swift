@@ -81,45 +81,15 @@ let CLEAR_FUNCTION: [String: Any] = [
     "parameters": EMPTY_PARAMS
 ]
 
-let SEARCH_QUERY_PROPERTY: [String: String] = [
-    "type": "string",
-    "description": "The web search query to execute"
-]
 
-let SEARCH_QUERY_PROPERTIES: [String: [String: String]] = [
-    "query": SEARCH_QUERY_PROPERTY
-]
-
-let CREATE_SEARCH_QUERY_PARAMS: [String: Any] = [
-    "type": "object", 
-    "properties": SEARCH_QUERY_PROPERTIES,
-    "required": ["query"]
-]
-
-let CREATE_SEARCH_QUERY_FUNCTION: [String: Any] = [
-    "type": "function",
-    "name": "createSearchQuery",
-    "description": "Creates a web search query based on user input. The query is displayed on screen for user confirmation.",
-    "parameters": CREATE_SEARCH_QUERY_PARAMS
-]
-
-let EXECUTE_WEB_SEARCH_FUNCTION: [String: Any] = [
-    "type": "function",
-    "name": "executeWebSearch",
-    "description": "Executes a web search using the current query to find the latest information. Triggered by keyword 'search'.",
-    "parameters": EMPTY_PARAMS
-]
-
-let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION, CREATE_SEARCH_QUERY_FUNCTION, EXECUTE_WEB_SEARCH_FUNCTION]
+let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
 
 let INSTRUCTIONS = """
-Your task is to assist in hands-free voice control for coding using Claude Code CLI and web search.
+Your task is to assist in hands-free voice control for coding using Claude Code CLI.
 
 You will receive a transcription of the user's speech. Based on this transcription, execute exactly ONE of these actions:
    - editPrompt: Optimize the transcribed input into a clear prompt for Claude Code. Consider everything the user has said, without leaving anything out or adding anything new. This is just an optimization step. Treat subsequent transcriptions as potential corrections to the current prompt, not as entirely new prompts.
    - sendPrompt: Send the current prompt to Claude Code
-   - createSearchQuery: Create or update the web search query based on user input
-   - executeWebSearch: Execute a web search using the current query to find latest information
    - accept/reject: Execute accept or reject actions in Claude Code CLI 
    - arrowUp/arrowDown: Navigate in the CLI
    - escape: Cancel current actions
@@ -129,7 +99,7 @@ Execute the most appropriate function based on the user's intent in the transcri
 
 Examples:
 - If the transcription is "send this prompt to Claude" or just "send", use the sendPrompt function.
-- If the transcription is "execute search" or "run search" or just "search", use the executeWebSearch function.
+- If the transcription contains navigation keywords like "accept", "reject", "arrow up", "arrow down", or "escape", use the corresponding navigation functions.
 """
 
 import SwiftUI
@@ -156,8 +126,6 @@ struct TranscriptionItem: Identifiable, Hashable {
 
 class AppState: ObservableObject {
     @Published var currentPrompt: String = ""
-    @Published var searchQuery: String = ""
-    @Published var searchResults: String = ""
     @Published var transcriptionItems: [TranscriptionItem] = []
     @Published var eventLogs: [String] = []
     let startTime = Date()
@@ -186,17 +154,6 @@ class AppState: ObservableObject {
         }
     }
     
-    func updateSearchQuery(_ query: String) {
-        DispatchQueue.main.async {
-            self.searchQuery = query
-        }
-    }
-    
-    func updateSearchResults(_ results: String) {
-        DispatchQueue.main.async {
-            self.searchResults = results
-        }
-    }
     
     // For complete transcriptions
     func appendCompleteTranscription(_ text: String) {
@@ -337,33 +294,6 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     
-                    Divider()
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Web Search:")
-                            .font(.headline)
-                        
-                        HStack {
-                            Text("Query: ")
-                                .font(.subheadline)
-                            
-                            Text(appState.searchQuery.isEmpty ? "What's happening in tech today?" : appState.searchQuery)
-                                .font(.body)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        
-                        if !appState.searchResults.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Results:")
-                                    .font(.subheadline)
-                                
-                                Text(appState.searchResults)
-                                    .font(.body)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .padding(.top, 4)
-                        }
-                    }
                     
                     if !appState.transcriptionItems.isEmpty {
                         Divider()
@@ -589,18 +519,6 @@ class FunctionCalling {
             }
             handleEditPrompt(prompt: prompt, callID: callID)
             
-        case "createSearchQuery":
-            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
-                  let query = argumentsDict["query"] as? String else {
-                appState.log("FunctionCalling", "Failed to parse createSearchQuery arguments")
-                let errorOutput = "Error: Failed to parse the query argument"
-                sendFunctionOutputToModel(callID: callID, output: errorOutput)
-                return
-            }
-            handleCreateSearchQuery(query: query, callID: callID)
-            
-        case "executeWebSearch":
-            handleExecuteWebSearch(callID: callID)
             
         case "sendPrompt":
             handleSendPrompt(callID: callID)
@@ -759,7 +677,7 @@ class FunctionCalling {
     }
     
     func handleClear(callID: String) {
-        let clearSequence = """
+        _ = """
         key code 53 -- escape key
         delay 0.1
         key code 53 -- escape key
@@ -775,180 +693,15 @@ class FunctionCalling {
         ]
         currentConversation.append(systemMessage)
         
-        // Clear the web search results file
-        clearWebSearchResultsFile()
-        
         // Clear UI elements
-        appState.updateSearchQuery("")
-        appState.updateSearchResults("")
         appState.clearTranscriptions()
         
-        appState.log("FunctionCalling", "Cleared conversation context and search history")
+        appState.log("FunctionCalling", "Cleared conversation context")
         
-        let output = "Interface, conversation context, and search history cleared"
+        let output = "Interface and conversation context cleared"
         sendFunctionOutputToModel(callID: callID, output: output)
     }
     
-    private func clearWebSearchResultsFile() {
-        let fileManager = FileManager.default
-        let baseDir = fileManager.homeDirectoryForCurrentUser.path
-        let filePath = "\(baseDir)/Documents/BetterVoiceControl-dev/web_search_results"
-        
-        do {
-            // Write an empty string to the file to clear it
-            try "".write(toFile: filePath, atomically: true, encoding: .utf8)
-            appState.log("WebSearch", "Search history file cleared")
-        } catch {
-            appState.log("WebSearch", "ERROR: Failed to clear search history file: \(error.localizedDescription)")
-        }
-    }
-    
-    func handleCreateSearchQuery(query: String, callID: String) {
-        appState.log("FunctionCalling", "Creating search query: \(query)")
-        
-        appState.updateSearchQuery(query)
-        
-        let output = "Search query created successfully"
-        sendFunctionOutputToModel(callID: callID, output: output)
-    }
-    
-    func handleExecuteWebSearch(callID: String) {
-        if appState.searchQuery.isEmpty {
-            let output = "Error: No search query available to execute"
-            sendFunctionOutputToModel(callID: callID, output: output)
-            return
-        }
-        
-        appState.log("FunctionCalling", "Executing web search: \(appState.searchQuery)")
-        
-        // Execute web search using the Responses API
-        executeWebSearch(query: appState.searchQuery) { [weak self] results in
-            guard let self = self else { return }
-            
-            DispatchQueue.main.async {
-                self.appState.updateSearchResults(results)
-                
-                // Append search results to a file
-                self.appendToSearchResultsFile(query: self.appState.searchQuery, results: results)
-                
-                let output = "Web search completed successfully"
-                self.sendFunctionOutputToModel(callID: callID, output: output)
-            }
-        }
-    }
-    
-    private func appendToSearchResultsFile(query: String, results: String) {
-        let fileManager = FileManager.default
-        let baseDir = fileManager.homeDirectoryForCurrentUser.path
-        let filePath = "\(baseDir)/Documents/BetterVoiceControl-dev/web_search_results"
-        
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let content = """
-        
-        --------- SEARCH: \(timestamp) ---------
-        Query: \(query)
-        
-        Results:
-        \(results)
-        
-        """
-        
-        self.appState.log("WebSearch", "Saving results to \(filePath)")
-        
-        if let fileHandle = FileHandle(forWritingAtPath: filePath) {
-            do {
-                fileHandle.seekToEndOfFile()
-                if let data = content.data(using: .utf8) {
-                    fileHandle.write(data)
-                } else {
-                    self.appState.log("WebSearch", "ERROR: Failed to convert content to data")
-                }
-                fileHandle.closeFile()
-            } catch {
-                self.appState.log("WebSearch", "ERROR: Failed to write to existing file: \(error.localizedDescription)")
-            }
-        } else {
-            do {
-                try content.write(toFile: filePath, atomically: true, encoding: .utf8)
-            } catch {
-                self.appState.log("WebSearch", "ERROR: Failed to create file: \(error.localizedDescription)")
-            }
-        }
-    }
-    
-    private func executeWebSearch(query: String, completion: @escaping (String) -> Void) {
-        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
-        let url = URL(string: "https://api.openai.com/v1/responses")!
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let requestBody: [String: Any] = [
-            "model": "gpt-4o",
-            "tools": [["type": "web_search_preview"]],
-            "input": query
-        ]
-        
-        appState.log("WebSearch", "Sending search request to API")
-        
-        do {
-            let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
-            request.httpBody = jsonData
-            
-            let task = session.dataTask(with: request) { [weak self] data, response, error in
-                guard let self = self else { return }
-                
-                if let error = error {
-                    self.appState.log("WebSearch", "API error: \(error)")
-                    completion("Error: \(error.localizedDescription)")
-                    return
-                }
-                
-                guard let data = data else {
-                    self.appState.log("WebSearch", "No data received")
-                    completion("Error: No data received from search")
-                    return
-                }
-                
-                self.appState.log("WebSearch", "Search response received")
-                
-                do {
-                    guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        self.appState.log("WebSearch", "Failed to parse API response")
-                        completion("Error: Failed to parse search results")
-                        return
-                    }
-                    
-                    // Extract the search results text
-                    if let output = json["output"] as? [[String: Any]] {
-                        for item in output {
-                            if let type = item["type"] as? String, type == "message",
-                               let content = item["content"] as? [[String: Any]],
-                               let firstContent = content.first,
-                               let resultText = firstContent["text"] as? String {
-                                
-                                completion(resultText)
-                                return
-                            }
-                        }
-                    }
-                    
-                    // If we couldn't extract the text
-                    completion("Search completed, but couldn't extract results")
-                } catch {
-                    self.appState.log("WebSearch", "Error processing API response: \(error)")
-                    completion("Error processing search results: \(error.localizedDescription)")
-                }
-            }
-            
-            task.resume()
-        } catch {
-            self.appState.log("WebSearch", "Error creating request: \(error)")
-            completion("Error: \(error.localizedDescription)")
-        }
-    }
     
     func sendFunctionOutputToModel(callID: String, output: String) {
         let functionCallOutput: [String: Any] = [
@@ -978,7 +731,7 @@ let problematicCharacters: [Character] = {
 extension String {
     func escapeForAppleScript() -> String {
         // First, replace double quotes with single quotes for Claude Code compatibility
-        var cleaned = self.replacingOccurrences(of: "\"", with: "'")
+        let cleaned = self.replacingOccurrences(of: "\"", with: "'")
         
         // Then do the regular AppleScript escaping
         var escaped = cleaned
@@ -1105,7 +858,7 @@ class TranscriptionAPI {
         
         // Convert to target format
         var error: NSError?
-        let finalConversion = converter.convert(to: outputBuffer, error: &error) { _, status in
+        _ = converter.convert(to: outputBuffer, error: &error) { _, status in
             status.pointee = .haveData
             return intermediateBuffer
         }
@@ -1258,7 +1011,7 @@ class TranscriptionAPI {
     
     private func sendAudioChunk(buffer: AVAudioPCMBuffer) {
         // Convert input buffer to target format for API (24000 Hz, mono, 16-bit PCM)
-        var buffer = convertToTargetAudioFormat(buffer)
+        let buffer = convertToTargetAudioFormat(buffer)
         
         guard let channelData = buffer.int16ChannelData?[0] else {
             appState.log("AudioProcessing", "ERROR: Failed to get channel data from buffer")
