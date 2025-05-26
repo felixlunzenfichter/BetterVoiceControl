@@ -1,15 +1,15 @@
 let PROMPT_PROPERTY: [String: String] = [
     "type": "string",
-    "description": "The refined or new prompt to be displayed and eventually sent to Claude Code."
+    "description": "The verbatim prompt to be displayed and eventually sent to Claude Code."
 ]
 
-let EDIT_PROMPT_PROPERTIES: [String: [String: String]] = [
+let SET_PROMPT_PROPERTIES: [String: [String: String]] = [
     "prompt": PROMPT_PROPERTY
 ]
 
-let EDIT_PROMPT_PARAMS: [String: Any] = [
+let SET_PROMPT_PARAMS: [String: Any] = [
     "type": "object", 
-    "properties": EDIT_PROMPT_PROPERTIES,
+    "properties": SET_PROMPT_PROPERTIES,
     "required": ["prompt"]
 ]
 
@@ -28,8 +28,8 @@ let EMPTY_PARAMS: [String: Any] = [
 let EDIT_PROMPT_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "editPrompt",
-    "description": "Refines or replaces the current prompt based on user input. The updated prompt is displayed on screen in real-time.",
-    "parameters": EDIT_PROMPT_PARAMS
+    "description": "Sets the prompt from user speech with minimal editing - only fix spelling mistakes and basic errors while preserving the user's exact words and phrasing. Handle corrections from subsequent speech.",
+    "parameters": SET_PROMPT_PARAMS
 ]
 
 let SEND_PROMPT_FUNCTION: [String: Any] = [
@@ -88,7 +88,7 @@ let INSTRUCTIONS = """
 Your task is to assist in hands-free voice control for coding using Claude Code CLI.
 
 You will receive a transcription of the user's speech. Based on this transcription, execute exactly ONE of these actions:
-   - editPrompt: Optimize the transcribed input into a clear prompt for Claude Code. Consider everything the user has said, without leaving anything out or adding anything new. This is just an optimization step. Treat subsequent transcriptions as potential corrections to the current prompt, not as entirely new prompts.
+   - editPrompt: Set the prompt from transcribed speech with MINIMAL editing. Only fix obvious spelling mistakes and basic grammatical errors. Stay as close to verbatim as possible. If subsequent transcriptions contain corrections (like "I meant X instead of Y"), apply those corrections to the current prompt.
    - sendPrompt: Send the current prompt to Claude Code
    - accept/reject: Execute accept or reject actions in Claude Code CLI 
    - arrowUp/arrowDown: Navigate in the CLI
@@ -100,6 +100,7 @@ Execute the most appropriate function based on the user's intent in the transcri
 Examples:
 - If the transcription is "send this prompt to Claude" or just "send", use the sendPrompt function.
 - If the transcription contains navigation keywords like "accept", "reject", "arrow up", "arrow down", or "escape", use the corresponding navigation functions.
+- For speech content, use editPrompt with minimal changes - fix typos but preserve the user's exact words and phrasing.
 """
 
 import SwiftUI
@@ -899,7 +900,9 @@ class TranscriptionAPI {
         let requestBody = """
         {
           "input_audio_transcription": {
-            "model": "gpt-4o-transcribe"
+            "model": "gpt-4o-transcribe",
+            "language": "en",
+            "prompt": "Voice commands for Claude Code: accept, reject, send prompt, clear, arrow up, arrow down, escape. User says 'accept' to confirm actions, never 'except'."
           },
           "turn_detection": {
             "type": "server_vad",
