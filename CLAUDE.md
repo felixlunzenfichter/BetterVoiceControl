@@ -26,3 +26,11 @@
 - Voice commands for Claude Code CLI navigation
 - Hands-free prompt editing and sending
 - Terminal control integration via AppleScript
+- Automatic internal restart on any error (microphone issues, API failures, etc.)
+
+## Workflow Requirements
+**ALWAYS commit and push changes immediately after making modifications** so the user can read changes on their iPad:
+1. After making any code changes, immediately run git add, commit, and push
+2. Use concise one-liner commit messages with no Claude attribution or clutter
+3. For full sentences in commit messages, end with a full stop. For keyword-style messages, no full stop needed
+4. This allows the user to review changes on other devices in real-time
