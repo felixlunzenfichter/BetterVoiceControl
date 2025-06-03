@@ -108,6 +108,7 @@ import Cocoa
 import ApplicationServices
 import AVFoundation
 import Foundation
+import CoreAudio
 
 // Define a structure to hold transcription and action information
 struct TranscriptionItem: Identifiable, Hashable {
@@ -238,35 +239,76 @@ class AppState: ObservableObject {
             self.transcriptionItems = []
             self.currentDeltaTranscription = ""
             self.currentTranscriptionID = nil
-            self.eventLogs = []
+        }
+    }
+    
+    func keepLastEventLogs(_ count: Int) {
+        DispatchQueue.main.async {
+            if self.eventLogs.count > count {
+                let lastLogs = Array(self.eventLogs.suffix(count))
+                self.eventLogs = lastLogs
+            }
         }
     }
     
 }
 
-@main
-struct VoiceControlledMacApp: App {
-    @StateObject private var appState = AppState()
+class AppManager: ObservableObject {
+    @Published var appState = AppState()
     var transcriptionApi: TranscriptionAPI!
-    var functionCalling: FunctionCalling!
+    private var functionCalling: FunctionCalling!
+    private var isRestarting = false
     
     init() {
-        let appState = AppState()
-        self._appState = StateObject(wrappedValue: appState)
-        
-        requestMicrophonePermissions()
-        
+        setupComponents()
+    }
+    
+    private func setupComponents() {
         functionCalling = FunctionCalling(appState: appState)
         transcriptionApi = TranscriptionAPI(appState: appState, functionCalling: functionCalling)
+        
+        // Set the restart handler to restart components
+        functionCalling.setRestartHandler { [weak self] in
+            self?.restartComponents()
+        }
+        
         transcriptionApi.connect()
     }
     
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environmentObject(appState)
+    func restartComponents() {
+        guard !isRestarting else {
+            appState.log("AppManager", "Restart already in progress, ignoring request")
+            return
+        }
+        
+        isRestarting = true
+        appState.log("AppManager", "Performing complete internal restart due to issues")
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.appState.log("AppManager", "Stopping all components...")
+            
+            // Stop and cleanup TranscriptionAPI
+            self.transcriptionApi.disconnect()
+            
+            // Reset function calling state
+            self.functionCalling.resetConversation()
+            
+            // Clear transcriptions and keep last 10 event logs
+            self.appState.clearTranscriptions()
+            self.appState.keepLastEventLogs(10)
+            self.appState.updateCurrentPrompt("")
+            
+            // Wait a moment then restart everything
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                self.appState.log("AppManager", "Restarting all components...")
+                self.setupComponents()
+                self.isRestarting = false
+            }
         }
     }
+    
     
     func requestMicrophonePermissions() {
         AVCaptureDevice.requestAccess(for: .audio) { [self] granted in
@@ -275,6 +317,24 @@ struct VoiceControlledMacApp: App {
             } else {
                 self.appState.log("App", "Microphone permissions not granted.")
             }
+        }
+    }
+}
+
+@main
+struct VoiceControlledMacApp: App {
+    @StateObject private var appManager = AppManager()
+    
+    init() {
+        let manager = AppManager()
+        self._appManager = StateObject(wrappedValue: manager)
+        manager.requestMicrophonePermissions()
+    }
+    
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environmentObject(appManager.appState)
         }
     }
 }
@@ -350,12 +410,33 @@ class FunctionCalling {
     private var appState: AppState
     private var session: URLSession
     private var currentConversation: [[String: Any]] = []
+    var restartHandler: (() -> Void)?
     
     init(appState: AppState) {
         self.appState = appState
         self.session = URLSession(configuration: .default)
         
         // Initialize the conversation with the system instructions
+        let systemMessage: [String: Any] = [
+            "role": "system",
+            "content": INSTRUCTIONS
+        ]
+        currentConversation.append(systemMessage)
+    }
+    
+    func setRestartHandler(_ handler: @escaping () -> Void) {
+        self.restartHandler = handler
+    }
+    
+    func resetConversation() {
+        appState.log("FunctionCalling", "Resetting conversation state")
+        currentConversation.removeAll()
+        
+        // Cancel any ongoing URL session tasks
+        session.invalidateAndCancel()
+        session = URLSession(configuration: .default)
+        
+        // Re-add the system instructions
         let systemMessage: [String: Any] = [
             "role": "system",
             "content": INSTRUCTIONS
@@ -404,11 +485,13 @@ class FunctionCalling {
                 
                 if let error = error {
                     self.appState.log("FunctionCalling", "Error calling Responses API: \(error)")
+                    self.restartHandler?()
                     return
                 }
                 
                 guard let data = data else {
                     self.appState.log("FunctionCalling", "No data received from API")
+                    self.restartHandler?()
                     return
                 }
                 
@@ -419,6 +502,7 @@ class FunctionCalling {
             task.resume()
         } catch {
             appState.log("FunctionCalling", "Error creating request: \(error)")
+            restartHandler?()
         }
     }
     
@@ -426,6 +510,7 @@ class FunctionCalling {
         do {
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 appState.log("FunctionCalling", "Failed to parse API response")
+                restartHandler?()
                 return
             }
             
@@ -459,6 +544,7 @@ class FunctionCalling {
             }
         } catch {
             appState.log("FunctionCalling", "Error processing API response: \(error)")
+            restartHandler?()
         }
     }
     
@@ -542,6 +628,8 @@ class FunctionCalling {
         case "clear":
             handleClear(callID: callID)
             
+
+            
         default:
             appState.log("FunctionCalling", "Unknown function: \(functionName)")
         }
@@ -608,6 +696,7 @@ class FunctionCalling {
             let errorOutput = "Error sending the prompt to Claude Code: \(error.localizedDescription)"
             sendFunctionOutputToModel(callID: callID, output: errorOutput)
             appState.log("FunctionCalling", "Error passed back to model: \(error)")
+            restartHandler?()
         }
     }
     
@@ -646,6 +735,7 @@ class FunctionCalling {
             appState.log("FunctionCalling", "Error executing \(actionName) command: \(error)")
             let output = "Error executing \(actionName) command: \(error.localizedDescription)"
             sendFunctionOutputToModel(callID: callID, output: output)
+            restartHandler?()
         }
     }
     
@@ -778,11 +868,14 @@ class TranscriptionAPI {
     private var audioPlayer: AVAudioPlayer?
     private var isSpeaking: Bool = false
     private var enableAudioPlayback: Bool = false  // Set to true to enable audio playback
+    private var currentInputDevice: AudioDeviceID?
+    private var audioSessionObserver: NSObjectProtocol?
     
     // Alternative initializer that accepts an existing FunctionCalling instance
     init(appState: AppState, functionCalling: FunctionCalling) {
         self.appState = appState
         self.functionCalling = functionCalling
+        setupAudioSessionObserver()
     }
     
     // Convert audio buffer to the target format (24000 Hz, 16-bit PCM, mono)
@@ -812,12 +905,14 @@ class TranscriptionAPI {
                                             interleaved: false)!
             
             guard let floatConverter = AVAudioConverter(from: buffer.format, to: floatFormat) else {
-                appState.log("AudioConverter", "ERROR: Failed to create intermediate converter, using original buffer")
+                appState.log("AudioConverter", "ERROR: Failed to create intermediate converter - restarting app")
+                restartApplication()
                 return buffer
             }
             
             guard let floatBuffer = AVAudioPCMBuffer(pcmFormat: floatFormat, frameCapacity: buffer.frameLength) else {
-                appState.log("AudioConverter", "ERROR: Failed to create intermediate buffer, using original buffer")
+                appState.log("AudioConverter", "ERROR: Failed to create intermediate buffer - restarting app")
+                restartApplication()
                 return buffer
             }
             
@@ -828,7 +923,8 @@ class TranscriptionAPI {
             }
             
             if let error = floatError {
-                appState.log("AudioConverter", "ERROR: Intermediate conversion failed: \(error), using original buffer")
+                appState.log("AudioConverter", "ERROR: Intermediate conversion failed: \(error) - restarting app")
+                restartApplication()
                 return buffer
             }
             
@@ -843,7 +939,8 @@ class TranscriptionAPI {
         
         // Create final converter
         guard let converter = AVAudioConverter(from: intermediateBuffer.format, to: targetFormat) else {
-            appState.log("AudioConverter", "ERROR: Failed to create target converter, using original buffer")
+            appState.log("AudioConverter", "ERROR: Failed to create target converter - restarting app")
+            restartApplication()
             return buffer
         }
         
@@ -853,7 +950,8 @@ class TranscriptionAPI {
         
         // Create output buffer
         guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: newFrameCapacity) else {
-            appState.log("AudioConverter", "ERROR: Failed to create output buffer, using original buffer")
+            appState.log("AudioConverter", "ERROR: Failed to create output buffer - restarting app")
+            restartApplication()
             return buffer
         }
         
@@ -865,22 +963,104 @@ class TranscriptionAPI {
         }
         
         if error != nil {
-            appState.log("AudioConverter", "ERROR: Final conversion failed: \(error?.localizedDescription ?? "unknown error"), using original buffer")
+            appState.log("AudioConverter", "ERROR: Final conversion failed: \(error?.localizedDescription ?? "unknown error") - restarting app")
+            restartApplication()
             return buffer
         }
         
         // Verify output buffer has data and int16 channel data is accessible
         if outputBuffer.frameLength == 0 {
-            appState.log("AudioConverter", "ERROR: Output buffer has zero frames, using original buffer")
+            appState.log("AudioConverter", "ERROR: Output buffer has zero frames - restarting app")
+            restartApplication()
             return buffer
         }
         
         if outputBuffer.int16ChannelData == nil {
-            appState.log("AudioConverter", "ERROR: Output buffer has nil int16ChannelData, using original buffer")
+            appState.log("AudioConverter", "ERROR: Output buffer has nil int16ChannelData - restarting app")
+            restartApplication()
             return buffer
         }
         
         return outputBuffer
+    }
+    
+    private func setupAudioSessionObserver() {
+        audioSessionObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: audioEngine,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleAudioEngineConfigurationChange()
+        }
+        
+        getCurrentInputDevice()
+        
+        let propertyListenerProc: AudioObjectPropertyListenerProc = { _, _, _, userData in
+            guard let userData = userData else { return noErr }
+            let transcriptionAPI = Unmanaged<TranscriptionAPI>.fromOpaque(userData).takeUnretainedValue()
+            transcriptionAPI.handleAudioDeviceChange()
+            return noErr
+        }
+        
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        AudioObjectAddPropertyListener(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            propertyListenerProc,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+    }
+    
+    private func getCurrentInputDevice() {
+        var deviceID: AudioDeviceID = 0
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            &propertySize,
+            &deviceID
+        )
+        
+        if status == noErr {
+            currentInputDevice = deviceID
+            appState.log("AudioSession", "Current input device ID: \(deviceID)")
+        }
+    }
+    
+    private func handleAudioEngineConfigurationChange() {
+        appState.log("AudioEngine", "Audio engine configuration changed - restarting app")
+        restartApplication()
+    }
+    
+    private func handleAudioDeviceChange() {
+        let previousDevice = currentInputDevice
+        getCurrentInputDevice()
+        
+        if let previous = previousDevice, let current = currentInputDevice, previous != current {
+            appState.log("AudioSession", "Input device changed from \(previous) to \(current) - restarting app")
+            restartApplication()
+        } else if previousDevice == nil && currentInputDevice != nil {
+            appState.log("AudioSession", "Input device became available - restarting app")
+            restartApplication()
+        }
+    }
+    
+    private func restartApplication() {
+        appState.log("TranscriptionAPI", "Triggering complete internal restart")
+        functionCalling.restartHandler?()
     }
     
     func connect() {
@@ -963,7 +1143,13 @@ class TranscriptionAPI {
         webSocketTask!.resume()
         
         appState.log("TranscriptionAPI", "WebSocket connected")
-        setupAudioEngine()
+        
+        do {
+            try setupAudioEngine()
+        } catch {
+            appState.log("TranscriptionAPI", "Failed to setup audio engine: \(error)")
+            restartApplication()
+        }
     }
     
     private func send(_ jsonObj: [String: Any]) {
@@ -978,7 +1164,7 @@ class TranscriptionAPI {
         }
     }
     
-    private func setupAudioEngine() {
+    private func setupAudioEngine() throws {
         let inputNode = audioEngine.inputNode
         
         // Use native input format - no format conversion during recording
@@ -997,7 +1183,8 @@ class TranscriptionAPI {
         """)
         
         // Install tap with native format
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, time in
+            guard let self = self else { return }
             self.sendAudioChunk(buffer: buffer)
         }
         
@@ -1009,6 +1196,7 @@ class TranscriptionAPI {
             receiveResponse()
         } catch {
             appState.log("TranscriptionAPI", "Audio engine couldn't start: \(error)")
+            throw error
         }
     }
     
@@ -1017,7 +1205,8 @@ class TranscriptionAPI {
         let buffer = convertToTargetAudioFormat(buffer)
         
         guard let channelData = buffer.int16ChannelData?[0] else {
-            appState.log("AudioProcessing", "ERROR: Failed to get channel data from buffer")
+            appState.log("AudioProcessing", "ERROR: Failed to get channel data from buffer - restarting app")
+            restartApplication()
             return
         }
         
@@ -1042,6 +1231,8 @@ class TranscriptionAPI {
             guard let self = self else { return }
             if let error = error {
                 self.appState.log("AudioProcessing", "ERROR: Failed to send audio chunk: \(error)")
+                self.appState.log("AudioProcessing", "WebSocket error detected - restarting app")
+                self.restartApplication()
             }
         }
     }
@@ -1053,6 +1244,9 @@ class TranscriptionAPI {
             switch result {
             case .failure(let error):
                 self.appState.log("TranscriptionAPI", "Error receiving response: \(error)")
+                self.appState.log("TranscriptionAPI", "WebSocket connection lost - restarting app")
+                self.restartApplication()
+                return
                 
             case .success(let message):
                 guard case .string(let text) = message else {
@@ -1106,6 +1300,7 @@ class TranscriptionAPI {
                     
                 case "error":
                     self.appState.log("TranscriptionAPI", "Error event: \(json)")
+                    self.restartApplication()
                     
                 default:
                     self.appState.log("TranscriptionAPI", "Unhandled event type: \(eventType)")
@@ -1204,9 +1399,54 @@ class TranscriptionAPI {
     }
     
     func disconnect() {
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        appState.log("TranscriptionAPI", "Disconnecting and cleaning up state")
+        
+        if let observer = audioSessionObserver {
+            NotificationCenter.default.removeObserver(observer)
+            audioSessionObserver = nil
+        }
+        
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        AudioObjectRemovePropertyListener(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            { _, _, _, _ in return noErr },
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        
+        if audioEngine.isRunning {
+            audioEngine.stop()
+            audioEngine.inputNode.removeTap(onBus: 0)
+        }
+        
         webSocketTask?.cancel()
-        appState.log("TranscriptionAPI", "Disconnected")
+        webSocketTask = nil
+        
+        // Reset all internal state
+        resetInternalState()
+        
+        appState.log("TranscriptionAPI", "Disconnected and state cleared")
+    }
+    
+    private func resetInternalState() {
+        appState.log("TranscriptionAPI", "Resetting internal state")
+        
+        // Clear audio state
+        audioBuffers.removeAll()
+        audioPlayer = nil
+        isSpeaking = false
+        currentInputDevice = nil
+        clientSecret = nil
+        
+        // Reset the audio engine completely
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        audioEngine.reset()
     }
 }
