@@ -2,115 +2,111 @@ let PROMPT_PROPERTY: [String: String] = [
     "type": "string",
     "description": "The verbatim prompt to be displayed and eventually sent to Claude Code."
 ]
-
 let SET_PROMPT_PROPERTIES: [String: [String: String]] = [
     "prompt": PROMPT_PROPERTY
 ]
-
 let SET_PROMPT_PARAMS: [String: Any] = [
     "type": "object", 
     "properties": SET_PROMPT_PROPERTIES,
     "required": ["prompt"]
 ]
-
 let SEND_PROMPT_PARAMS: [String: Any] = [
     "type": "object",
     "properties": [String: Any](),
     "required": [String]()
 ]
-
 let EMPTY_PARAMS: [String: Any] = [
     "type": "object",
     "properties": [String: Any](),
     "required": [String]()
 ]
-
 let EDIT_PROMPT_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "editPrompt",
     "description": "Sets the prompt from user speech with minimal editing - only fix spelling mistakes and basic errors while preserving the user's exact words and phrasing. Handle corrections from subsequent speech.",
     "parameters": SET_PROMPT_PARAMS
 ]
-
 let SEND_PROMPT_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "sendPrompt",
     "description": "Transmits the final, refined prompt to the Claude Code coding agent for execution.",
     "parameters": SEND_PROMPT_PARAMS
 ]
-
 let ACCEPT_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "accept",
     "description": "Executes a return/enter key press in Terminal for accepting current action in Claude Code CLI. Triggered by keyword 'accept'.",
     "parameters": EMPTY_PARAMS
 ]
-
 let REJECT_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "reject",
     "description": "Executes a sequence for rejecting current action in Claude Code CLI. Triggered by keyword 'reject'.",
     "parameters": EMPTY_PARAMS
 ]
-
 let ARROW_UP_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "arrowUp",
     "description": "Executes an up arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow up'.",
     "parameters": EMPTY_PARAMS
 ]
-
 let ARROW_DOWN_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "arrowDown",
     "description": "Executes a down arrow key press in Terminal for navigating in Claude Code CLI. Triggered by keyword 'arrow down'.",
     "parameters": EMPTY_PARAMS
 ]
-
 let ESCAPE_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "escape",
     "description": "Executes an escape key press in Terminal for canceling actions in Claude Code CLI. Triggered by keyword 'escape'.",
     "parameters": EMPTY_PARAMS
 ]
-
 let CLEAR_FUNCTION: [String: Any] = [
     "type": "function",
     "name": "clear",
     "description": "Clears the current interface and resets the state. Triggered by keyword 'clear'.",
     "parameters": EMPTY_PARAMS
 ]
-
-
 let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
-
 let INSTRUCTIONS = """
-Your task is to assist in hands-free voice control for coding using Claude Code CLI.
+You are the voice control interface for Claude Code CLI, a powerful AI coding assistant. The user can ONLY communicate through speech - no keyboard or mouse input is available. You are their sole control window to interact with Claude Code.
 
-You will receive a transcription of the user's speech. Based on this transcription, execute exactly ONE of these actions:
-   - editPrompt: Set the prompt from transcribed speech with MINIMAL editing. Only fix obvious spelling mistakes and basic grammatical errors. Stay as close to verbatim as possible. If subsequent transcriptions contain corrections (like "I meant X instead of Y"), apply those corrections to the current prompt.
-   - sendPrompt: Send the current prompt to Claude Code
-   - accept/reject: Execute accept or reject actions in Claude Code CLI 
-   - arrowUp/arrowDown: Navigate in the CLI
-   - escape: Cancel current actions
-   - clear: Reset the interface and clear the conversation context
+CONTEXT: Claude Code is an AI assistant that helps with software engineering tasks. It can read files, write code, run commands, create commits, and manage entire codebases. The user directs Claude Code through prompts that you help compose and send.
 
-Execute the most appropriate function based on the user's intent in the transcription.
+Your role is to execute exactly ONE action based on speech transcription:
+
+PROMPT MANAGEMENT:
+- editPrompt: Convert speech to prompts with minimal editing. Preserve exact user intent and technical terminology. Handle corrections like "I meant X instead of Y".
+- sendPrompt: Transmit the completed prompt to Claude Code for execution.
+
+CLAUDE CODE NAVIGATION:
+- accept: Confirm Claude Code's proposed actions (user says "accept", never "except")
+- reject: Decline Claude Code's proposals and request alternatives
+- arrowUp/arrowDown: Navigate through Claude Code's interface options
+- escape: Cancel current Claude Code operations
+- clear: Reset the conversation and start fresh
+
+EXECUTION PRINCIPLES:
+- The user has no other way to control their system - you are their complete interface
+- Preserve technical accuracy in prompts (file paths, function names, commands)
+- Recognize coding context and terminology
+- Respond immediately to navigation commands
+- Maintain conversation flow with Claude Code
 
 Examples:
-- If the transcription is "send this prompt to Claude" or just "send", use the sendPrompt function.
-- If the transcription contains navigation keywords like "accept", "reject", "arrow up", "arrow down", or "escape", use the corresponding navigation functions.
-- For speech content, use editPrompt with minimal changes - fix typos but preserve the user's exact words and phrasing.
+- "Edit the main function in app.py" → editPrompt with exact technical details
+- "Send this to Claude" → sendPrompt
+- "Accept that change" → accept
+- "Go up" or "arrow up" → arrowUp
+- "Start over" or "clear everything" → clear
 """
-
 import SwiftUI
 import Cocoa
 import ApplicationServices
 import AVFoundation
 import Foundation
 import CoreAudio
-
-// Define a structure to hold transcription and action information
 struct TranscriptionItem: Identifiable, Hashable {
     var id = UUID()
     var transcription: String
@@ -125,7 +121,6 @@ struct TranscriptionItem: Identifiable, Hashable {
         hasher.combine(id)
     }
 }
-
 class AppState: ObservableObject {
     @Published var currentPrompt: String = ""
     @Published var transcriptionItems: [TranscriptionItem] = []
@@ -157,12 +152,10 @@ class AppState: ObservableObject {
     }
     
     
-    // For complete transcriptions
     func appendCompleteTranscription(_ text: String) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
         DispatchQueue.main.async {
-            // If we have a current delta transcription in progress with matching ID
             if let id = self.currentTranscriptionID, 
                let index = self.transcriptionItems.firstIndex(where: { $0.id == id }) {
                 // Replace it with the complete version
@@ -252,7 +245,6 @@ class AppState: ObservableObject {
     }
     
 }
-
 class AppManager: ObservableObject {
     @Published var appState = AppState()
     var transcriptionApi: TranscriptionAPI!
@@ -320,7 +312,6 @@ class AppManager: ObservableObject {
         }
     }
 }
-
 @main
 struct VoiceControlledMacApp: App {
     @StateObject private var appManager = AppManager()
@@ -338,7 +329,6 @@ struct VoiceControlledMacApp: App {
         }
     }
 }
-
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     
@@ -405,7 +395,6 @@ struct ContentView: View {
         .frame(minWidth: 700, minHeight: 600)
     }
 }
-
 class FunctionCalling {
     private var appState: AppState
     private var session: URLSession
@@ -587,7 +576,6 @@ class FunctionCalling {
                              callID: callID)
         }
     }
-
     private func handleFunctionCall(functionName: String, argumentsString: String, callID: String) {
         guard let argumentsData = argumentsString.data(using: .utf8) else {
             appState.log("FunctionCalling", "Failed to convert arguments string to data")
@@ -628,7 +616,6 @@ class FunctionCalling {
         case "clear":
             handleClear(callID: callID)
             
-
             
         default:
             appState.log("FunctionCalling", "Unknown function: \(functionName)")
@@ -805,8 +792,6 @@ class FunctionCalling {
         currentConversation.append(functionCallOutput)
     }
 }
-
-
 let problematicCharacters: [Character] = {
     var chars = [Character]()
     for code in 0..<32 {
@@ -818,7 +803,6 @@ let problematicCharacters: [Character] = {
     chars.append("\\")
     return chars
 }()
-
 extension String {
     func escapeForAppleScript() -> String {
         // First, replace double quotes with single quotes for Claude Code compatibility
@@ -842,21 +826,18 @@ extension String {
         return escaped
     }
 }
-
 extension UInt16 {
     var bytes: Data {
         var value = self.littleEndian
         return Data(bytes: &value, count: MemoryLayout<UInt16>.size)
     }
 }
-
 extension UInt32 {
     var bytes: Data {
         var value = self.littleEndian
         return Data(bytes: &value, count: MemoryLayout<UInt32>.size)
     }
 }
-
 class TranscriptionAPI {
     private var webSocketTask: URLSessionWebSocketTask?
     private let audioEngine = AVAudioEngine()

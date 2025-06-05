@@ -6,8 +6,10 @@
 - Clean: `xcodebuild clean -project BetterVoiceControl.xcodeproj`
 - Test: `xcodebuild test -project BetterVoiceControl.xcodeproj -scheme BetterVoiceControl`
 
-## Code Style Guidelines
-- **NO COMMENTS**: Never use code comments. Use the log function to document code behavior and intention.
+## Global Code Guidelines
+- **NO COMMENTS**: Never use code comments anywhere in any codebase. Use log statements only to document behavior and intention.
+- **User Input Restriction**: User can only speak - no mouse/keyboard input allowed. Voice is the sole control method.
+- **Claude Control Window**: BetterVoiceControl is the user's only interface to control Claude Code and their system.
 - **Logging**: Always use `appState.log("ComponentName", "Message")` instead of print statements or comments.
 - **UI Updates**: Ensure all UI-related updates happen on the main thread using DispatchQueue.main.async.
 - **Formatting**: 4-space indentation, consistent line breaks after function signatures.
@@ -24,9 +26,10 @@
 ## Voice Control Features
 - Real-time voice transcription using OpenAI Realtime API
 - Voice commands for Claude Code CLI navigation
-- Hands-free prompt editing and sending
+- Hands-free prompt editing and sending with rich Claude Code context
 - Terminal control integration via AppleScript
 - Automatic internal restart on any error (microphone issues, API failures, etc.)
+- User's sole control interface - no mouse/keyboard input available
 
 ## Workflow Requirements
 **ALWAYS commit and push changes immediately after making modifications** so the user can read changes on their iPad:
