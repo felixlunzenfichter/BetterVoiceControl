@@ -126,8 +126,6 @@ struct TranscriptionItem: Identifiable, Hashable {
     var transcription: String
     var action: String?
     var isComplete: Bool = false
-    var contextNumber: Int = 1  // Default to 1 instead of 0
-    var isIncludedInContext: Bool = true
     
     static func == (lhs: TranscriptionItem, rhs: TranscriptionItem) -> Bool {
         return lhs.id == rhs.id
@@ -196,14 +194,7 @@ class AppState: ObservableObject {
     
     func updateContextAfterAction() {
         DispatchQueue.main.async {
-            self.setCurrentOperation("Updating context", status: "processing")
-            self.updateContextNumbers()
-            
-            // Clear the operation after a brief moment
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                self.clearCurrentOperation()
-            }
-            
+            // Just trigger context evaluation - no need to update numbers as they're computed dynamically
             self.triggerContextEvaluation()
         }
     }
@@ -213,13 +204,10 @@ class AppState: ObservableObject {
         DispatchQueue.main.async {
             // If we're starting a new transcription
             if self.currentTranscriptionID == nil {
-                var newItem = TranscriptionItem(transcription: deltaText, isComplete: false)
-                // Set correct context number for new item
-                newItem.contextNumber = 1  // Will be the newest
+                let newItem = TranscriptionItem(transcription: deltaText, isComplete: false)
                 self.currentTranscriptionID = newItem.id
                 self.currentDeltaTranscription = deltaText
                 self.transcriptionItems.append(newItem)
-                // Don't update context numbers here - wait until transcription is complete
             } else {
                 // We're continuing an existing transcription
                 self.currentDeltaTranscription += deltaText
@@ -273,40 +261,37 @@ class AppState: ObservableObject {
         }
     }
     
-    func updateContextNumbers() {
-        DispatchQueue.main.async {
-            let count = self.transcriptionItems.count
-            for i in 0..<count {
-                // Newest (last in array) gets number 1, oldest gets highest number
-                self.transcriptionItems[i].contextNumber = count - i
-            }
-            self.updateContextInclusion()
-        }
+    func getContextNumber(for item: TranscriptionItem) -> Int {
+        guard let index = transcriptionItems.firstIndex(where: { $0.id == item.id }) else { return 1 }
+        // Newest (last in array) gets number 1, oldest gets highest number
+        return transcriptionItems.count - index
     }
     
-    func updateContextInclusion() {
-        DispatchQueue.main.async {
-            for i in 0..<self.transcriptionItems.count {
-                self.transcriptionItems[i].isIncludedInContext = self.transcriptionItems[i].contextNumber <= self.contextBoundary
-            }
-        }
+    func isIncludedInContext(_ item: TranscriptionItem) -> Bool {
+        let contextNumber = getContextNumber(for: item)
+        return contextNumber <= contextBoundary
     }
     
     func getIncludedTranscriptions() -> [TranscriptionItem] {
-        // Return included transcriptions sorted by context number (for conversation building)
+        // Return included transcriptions sorted oldest first for conversation building
         return transcriptionItems
-            .filter { $0.isIncludedInContext }
-            .sorted { $0.contextNumber > $1.contextNumber } // Oldest first for conversation history
+            .filter { isIncludedInContext($0) }
+            .sorted { getContextNumber(for: $0) > getContextNumber(for: $1) }
     }
     
     func getDisplayTranscriptions() -> [TranscriptionItem] {
-        // Sort all transcriptions by context number (ascending = newest first)
-        let sortedTranscriptions = transcriptionItems.sorted { $0.contextNumber < $1.contextNumber }
+        // Create items with their context numbers for display
+        let itemsWithNumbers = transcriptionItems.map { item in
+            (item: item, number: getContextNumber(for: item), included: isIncludedInContext(item))
+        }
         
-        let included = sortedTranscriptions.filter { $0.isIncludedInContext }
-        let excluded = sortedTranscriptions.filter { !$0.isIncludedInContext }
+        // Sort by context number (ascending = newest first)
+        let sorted = itemsWithNumbers.sorted { $0.number < $1.number }
         
-        // Take only the 3 most recent excluded (already sorted, so just take first 3)
+        let included = sorted.filter { $0.included }.map { $0.item }
+        let excluded = sorted.filter { !$0.included }.map { $0.item }
+        
+        // Take only the 3 most recent excluded
         let recentExcluded = Array(excluded.prefix(3))
         
         return included + recentExcluded
@@ -315,7 +300,6 @@ class AppState: ObservableObject {
     func setContextBoundary(_ boundary: Int) {
         DispatchQueue.main.async {
             self.contextBoundary = boundary
-            self.updateContextInclusion()
             self.log("ContextManager", "Context boundary manually set to \(boundary)")
         }
     }
@@ -353,7 +337,7 @@ class AppState: ObservableObject {
         }
         
         let included = getIncludedTranscriptions()
-        let excluded = transcriptionItems.filter { !$0.isIncludedInContext }
+        let excluded = transcriptionItems.filter { !isIncludedInContext($0) }
         let additionalContext = Array(excluded.prefix(3))
         
         let contextToEvaluate = included + additionalContext
@@ -362,7 +346,6 @@ class AppState: ObservableObject {
             let newBoundary = try await callContextEvaluationAPI(transcriptions: contextToEvaluate)
             await MainActor.run {
                 self.contextBoundary = newBoundary
-                self.updateContextInclusion()
                 self.log("ContextManager", "Context boundary automatically updated to \(newBoundary)")
                 self.setCurrentOperation("Context boundary updated", status: "complete")
             }
@@ -389,7 +372,10 @@ class AppState: ObservableObject {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let transcriptionTexts = transcriptions.map { "[\($0.contextNumber)] \($0.transcription)" }.joined(separator: "\n")
+        let transcriptionTexts = transcriptions.map { item in
+            let number = getContextNumber(for: item)
+            return "[\(number)] \(item.transcription)"
+        }.joined(separator: "\n")
         
         let systemPrompt = """
         You are a context management system. Given a numbered list of transcriptions (newest = 1), determine the optimal cutoff point for including context.
@@ -536,21 +522,24 @@ struct ContentView: View {
                             
                             ForEach(visibleTranscriptions.indices, id: \.self) { index in
                                 let item = visibleTranscriptions[index]
+                                let contextNumber = appState.getContextNumber(for: item)
+                                let isIncluded = appState.isIncludedInContext(item)
+                                
                                 HStack(alignment: .top, spacing: 6) {
                                     Circle()
-                                        .fill(item.isIncludedInContext ? Color.green : Color.red)
+                                        .fill(isIncluded ? Color.green : Color.red)
                                         .frame(width: 8, height: 8)
                                         .padding(.top, 4)
                                     
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack(spacing: 4) {
-                                            Text("[\(item.contextNumber)]")
+                                            Text("[\(contextNumber)]")
                                                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                                .foregroundColor(item.isIncludedInContext ? .green : .red)
+                                                .foregroundColor(isIncluded ? .green : .red)
                                             
                                             Text(item.transcription)
                                                 .font(.caption)
-                                                .foregroundColor(item.isIncludedInContext ? .primary : .secondary)
+                                                .foregroundColor(isIncluded ? .primary : .secondary)
                                         }
                                         
                                         if let action = item.action {
