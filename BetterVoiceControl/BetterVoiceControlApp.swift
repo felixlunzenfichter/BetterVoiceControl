@@ -374,12 +374,16 @@ class AppState: ObservableObject {
         
         let transcriptionTexts = transcriptions.map { item in
             let number = getContextNumber(for: item)
-            return "[\(number)] \(item.transcription)"
+            var text = "[\(number)] \(item.transcription)"
+            if let action = item.action {
+                text += " → Action: \(action)"
+            }
+            return text
         }.joined(separator: "\n")
         
         let systemPrompt = """
-        You are a context management system. Given a numbered list of transcriptions (newest = 1), determine the optimal cutoff point for including context.
-        Consider conversation flow, topic changes, and relevance. Return ONLY a single number indicating the highest number to include.
+        You are a context management system. Given a numbered list of transcriptions (newest = 1) with their associated actions, determine the optimal cutoff point for including context.
+        Consider conversation flow, topic changes, relevance, and the actions that were executed. Return ONLY a single number indicating the highest number to include.
         For example, if transcriptions 1-7 should be included, return "7".
         """
         
