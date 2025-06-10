@@ -384,7 +384,7 @@ class AppState: ObservableObject {
         """
         
         let requestBody: [String: Any] = [
-            "model": "gpt-4o-mini",
+            "model": "gpt-4o-2024-11-20",
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": transcriptionTexts]
