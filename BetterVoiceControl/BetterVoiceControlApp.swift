@@ -1331,6 +1331,10 @@ class TranscriptionAPI {
                 return
             }
             
+            if let httpResponse = response as? HTTPURLResponse {
+                self.appState.log("TranscriptionAPI", "Session response status code: \(httpResponse.statusCode)")
+            }
+            
             if let data = data, let responseString = String(data: data, encoding: .utf8) {
                 self.appState.log("TranscriptionAPI", "Session created response: \(responseString)")
                 
@@ -1340,6 +1344,11 @@ class TranscriptionAPI {
                            let secretValue = secretObj["value"] as? String {
                             self.clientSecret = secretValue
                             self.appState.log("TranscriptionAPI", "Client secret received")
+                            
+                            if let sessionId = json["id"] as? String {
+                                self.appState.log("TranscriptionAPI", "Session ID: \(sessionId)")
+                            }
+                            
                             self.connectWebSocket(clientSecret: secretValue)
                         } else {
                             self.appState.log("TranscriptionAPI", "No client_secret value in response")
@@ -1526,8 +1535,32 @@ class TranscriptionAPI {
                         self.functionCalling.processTranscription(transcript)
                     }
                     
+                case "conversation.item.input_audio_transcription.failed":
+                    self.appState.log("TranscriptionAPI", "Transcription failed event details: \(json)")
+                    if let item = json["item"] as? [String: Any] {
+                        self.appState.log("TranscriptionAPI", "Failed item: \(item)")
+                        if let error = item["error"] as? [String: Any] {
+                            self.appState.log("TranscriptionAPI", "Error details: \(error)")
+                            if let message = error["message"] as? String {
+                                self.appState.log("TranscriptionAPI", "Error message: \(message)")
+                            }
+                            if let code = error["code"] as? String {
+                                self.appState.log("TranscriptionAPI", "Error code: \(code)")
+                            }
+                        }
+                    }
+                    
                 case "error":
                     self.appState.log("TranscriptionAPI", "Error event: \(json)")
+                    if let error = json["error"] as? [String: Any] {
+                        self.appState.log("TranscriptionAPI", "Error details: \(error)")
+                        if let message = error["message"] as? String {
+                            self.appState.log("TranscriptionAPI", "Error message: \(message)")
+                        }
+                        if let code = error["code"] as? String {
+                            self.appState.log("TranscriptionAPI", "Error code: \(code)")
+                        }
+                    }
                     self.restartApplication()
                     
                 default:
