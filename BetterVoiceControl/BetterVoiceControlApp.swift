@@ -62,13 +62,22 @@ let ESCAPE_FUNCTION: [String: Any] = [
     "description": "Executes an escape key press in Terminal for canceling actions in Claude Code CLI. Triggered by keyword 'escape'.",
     "parameters": EMPTY_PARAMS
 ]
-let CLEAR_FUNCTION: [String: Any] = [
+let SET_CONTEXT_FUNCTION: [String: Any] = [
     "type": "function",
-    "name": "clear",
-    "description": "Clears the current interface and resets the state. Triggered by keyword 'clear'.",
-    "parameters": EMPTY_PARAMS
+    "name": "setContextBoundary",
+    "description": "Sets context to include last N transcriptions. Triggered by phrases like 'include last 5', 'include up to number 7', or 'include all'.",
+    "parameters": [
+        "type": "object",
+        "properties": [
+            "boundary": [
+                "type": "integer",
+                "description": "The number of recent transcriptions to include. Use 999 for 'all'."
+            ]
+        ],
+        "required": ["boundary"]
+    ]
 ]
-let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, CLEAR_FUNCTION]
+let ALL_FUNCTIONS = [EDIT_PROMPT_FUNCTION, SEND_PROMPT_FUNCTION, ACCEPT_FUNCTION, REJECT_FUNCTION, ARROW_UP_FUNCTION, ARROW_DOWN_FUNCTION, ESCAPE_FUNCTION, SET_CONTEXT_FUNCTION]
 let INSTRUCTIONS = """
 You are the voice control interface for Claude Code CLI, a powerful AI coding assistant. The user can ONLY communicate through speech - no keyboard or mouse input is available. You are their sole control window to interact with Claude Code.
 
@@ -85,7 +94,12 @@ CLAUDE CODE NAVIGATION:
 - reject: Decline Claude Code's proposals and request alternatives
 - arrowUp/arrowDown: Navigate through Claude Code's interface options
 - escape: Cancel current Claude Code operations
-- clear: Reset the conversation and start fresh
+
+CONTEXT MANAGEMENT:
+- setContextBoundary: Control how many recent transcriptions are included in prompts
+- "Include last 5" → Sets context to include only the 5 most recent transcriptions
+- "Include up to number 10" → Includes transcriptions 1-10
+- "Include all" → Includes all transcriptions (boundary = 999)
 
 EXECUTION PRINCIPLES:
 - The user has no other way to control their system - you are their complete interface
@@ -99,7 +113,7 @@ Examples:
 - "Send this to Claude" → sendPrompt
 - "Accept that change" → accept
 - "Go up" or "arrow up" → arrowUp
-- "Start over" or "clear everything" → clear
+- "Include last 5" → setContextBoundary
 """
 import SwiftUI
 import Cocoa
@@ -112,6 +126,8 @@ struct TranscriptionItem: Identifiable, Hashable {
     var transcription: String
     var action: String?
     var isComplete: Bool = false
+    var contextNumber: Int = 1  // Default to 1 instead of 0
+    var isIncludedInContext: Bool = true
     
     static func == (lhs: TranscriptionItem, rhs: TranscriptionItem) -> Bool {
         return lhs.id == rhs.id
@@ -125,9 +141,13 @@ class AppState: ObservableObject {
     @Published var currentPrompt: String = ""
     @Published var transcriptionItems: [TranscriptionItem] = []
     @Published var eventLogs: [String] = []
+    @Published var contextBoundary: Int = Int.max
+    @Published var currentOperation: String? = nil
+    @Published var currentOperationStatus: String = ""
     let startTime = Date()
     private var currentDeltaTranscription: String = ""
     private var currentTranscriptionID: UUID? = nil
+    private var isEvaluatingContext: Bool = false
     
     func log(_ source: String, _ message: String) {
         let timeElapsed = Date().timeIntervalSince(startTime)
@@ -159,10 +179,8 @@ class AppState: ObservableObject {
             if let id = self.currentTranscriptionID, 
                let index = self.transcriptionItems.firstIndex(where: { $0.id == id }) {
                 // Replace it with the complete version
-                var item = self.transcriptionItems[index]
-                item.transcription = text
-                item.isComplete = true
-                self.transcriptionItems[index] = item
+                self.transcriptionItems[index].transcription = text
+                self.transcriptionItems[index].isComplete = true
             } else {
                 // Just add a new complete transcription
                 self.transcriptionItems.append(TranscriptionItem(transcription: text, isComplete: true))
@@ -171,6 +189,22 @@ class AppState: ObservableObject {
             // Reset the current delta tracking
             self.currentDeltaTranscription = ""
             self.currentTranscriptionID = nil
+            
+            // Don't update context here - let action completion handle it
+        }
+    }
+    
+    func updateContextAfterAction() {
+        DispatchQueue.main.async {
+            self.setCurrentOperation("Updating context", status: "processing")
+            self.updateContextNumbers()
+            
+            // Clear the operation after a brief moment
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.clearCurrentOperation()
+            }
+            
+            self.triggerContextEvaluation()
         }
     }
     
@@ -179,10 +213,13 @@ class AppState: ObservableObject {
         DispatchQueue.main.async {
             // If we're starting a new transcription
             if self.currentTranscriptionID == nil {
-                let newItem = TranscriptionItem(transcription: deltaText, isComplete: false)
+                var newItem = TranscriptionItem(transcription: deltaText, isComplete: false)
+                // Set correct context number for new item
+                newItem.contextNumber = 1  // Will be the newest
                 self.currentTranscriptionID = newItem.id
                 self.currentDeltaTranscription = deltaText
                 self.transcriptionItems.append(newItem)
+                // Don't update context numbers here - wait until transcription is complete
             } else {
                 // We're continuing an existing transcription
                 self.currentDeltaTranscription += deltaText
@@ -190,9 +227,8 @@ class AppState: ObservableObject {
                 // Find and update the item with the matching ID
                 if let id = self.currentTranscriptionID,
                    let index = self.transcriptionItems.firstIndex(where: { $0.id == id }) {
-                    var item = self.transcriptionItems[index]
-                    item.transcription = self.currentDeltaTranscription
-                    self.transcriptionItems[index] = item
+                    // Direct update to avoid conflicts with context management
+                    self.transcriptionItems[index].transcription = self.currentDeltaTranscription
                 }
             }
         }
@@ -227,13 +263,6 @@ class AppState: ObservableObject {
         log(source, event)
     }
     
-    func clearTranscriptions() {
-        DispatchQueue.main.async {
-            self.transcriptionItems = []
-            self.currentDeltaTranscription = ""
-            self.currentTranscriptionID = nil
-        }
-    }
     
     func keepLastEventLogs(_ count: Int) {
         DispatchQueue.main.async {
@@ -242,6 +271,157 @@ class AppState: ObservableObject {
                 self.eventLogs = lastLogs
             }
         }
+    }
+    
+    func updateContextNumbers() {
+        DispatchQueue.main.async {
+            let count = self.transcriptionItems.count
+            for i in 0..<count {
+                // Newest (last in array) gets number 1, oldest gets highest number
+                self.transcriptionItems[i].contextNumber = count - i
+            }
+            self.updateContextInclusion()
+        }
+    }
+    
+    func updateContextInclusion() {
+        DispatchQueue.main.async {
+            for i in 0..<self.transcriptionItems.count {
+                self.transcriptionItems[i].isIncludedInContext = self.transcriptionItems[i].contextNumber <= self.contextBoundary
+            }
+        }
+    }
+    
+    func getIncludedTranscriptions() -> [TranscriptionItem] {
+        // Return included transcriptions sorted by context number (for conversation building)
+        return transcriptionItems
+            .filter { $0.isIncludedInContext }
+            .sorted { $0.contextNumber > $1.contextNumber } // Oldest first for conversation history
+    }
+    
+    func getDisplayTranscriptions() -> [TranscriptionItem] {
+        // Sort all transcriptions by context number (ascending = newest first)
+        let sortedTranscriptions = transcriptionItems.sorted { $0.contextNumber < $1.contextNumber }
+        
+        let included = sortedTranscriptions.filter { $0.isIncludedInContext }
+        let excluded = sortedTranscriptions.filter { !$0.isIncludedInContext }
+        
+        // Take only the 3 most recent excluded (already sorted, so just take first 3)
+        let recentExcluded = Array(excluded.prefix(3))
+        
+        return included + recentExcluded
+    }
+    
+    func setContextBoundary(_ boundary: Int) {
+        DispatchQueue.main.async {
+            self.contextBoundary = boundary
+            self.updateContextInclusion()
+            self.log("ContextManager", "Context boundary manually set to \(boundary)")
+        }
+    }
+    
+    func setCurrentOperation(_ operation: String, status: String = "processing") {
+        DispatchQueue.main.async {
+            self.currentOperation = operation
+            self.currentOperationStatus = status
+        }
+    }
+    
+    func clearCurrentOperation() {
+        DispatchQueue.main.async {
+            self.currentOperation = nil
+            self.currentOperationStatus = ""
+        }
+    }
+    
+    func triggerContextEvaluation() {
+        guard !isEvaluatingContext else { return }
+        
+        Task {
+            await evaluateContextBoundary()
+        }
+    }
+    
+    private func evaluateContextBoundary() async {
+        isEvaluatingContext = true
+        defer { isEvaluatingContext = false }
+        
+        guard transcriptionItems.count > 5 else { return }
+        
+        await MainActor.run {
+            self.setCurrentOperation("Evaluating context boundary", status: "analyzing")
+        }
+        
+        let included = getIncludedTranscriptions()
+        let excluded = transcriptionItems.filter { !$0.isIncludedInContext }
+        let additionalContext = Array(excluded.prefix(3))
+        
+        let contextToEvaluate = included + additionalContext
+        
+        do {
+            let newBoundary = try await callContextEvaluationAPI(transcriptions: contextToEvaluate)
+            await MainActor.run {
+                self.contextBoundary = newBoundary
+                self.updateContextInclusion()
+                self.log("ContextManager", "Context boundary automatically updated to \(newBoundary)")
+                self.setCurrentOperation("Context boundary updated", status: "complete")
+            }
+        } catch {
+            log("ContextManager", "Error evaluating context: \(error)")
+            await MainActor.run {
+                self.setCurrentOperation("Context evaluation failed", status: "error")
+            }
+        }
+        
+        // Clear operation after a short delay
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        await MainActor.run {
+            self.clearCurrentOperation()
+        }
+    }
+    
+    private func callContextEvaluationAPI(transcriptions: [TranscriptionItem]) async throws -> Int {
+        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!
+        let url = URL(string: "https://api.openai.com/v1/chat/completions")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let transcriptionTexts = transcriptions.map { "[\($0.contextNumber)] \($0.transcription)" }.joined(separator: "\n")
+        
+        let systemPrompt = """
+        You are a context management system. Given a numbered list of transcriptions (newest = 1), determine the optimal cutoff point for including context.
+        Consider conversation flow, topic changes, and relevance. Return ONLY a single number indicating the highest number to include.
+        For example, if transcriptions 1-7 should be included, return "7".
+        """
+        
+        let requestBody: [String: Any] = [
+            "model": "gpt-4o-mini",
+            "messages": [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": transcriptionTexts]
+            ],
+            "temperature": 0.3,
+            "max_tokens": 10
+        ]
+        
+        let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
+        request.httpBody = jsonData
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any],
+              let content = message["content"] as? String,
+              let boundary = Int(content.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw NSError(domain: "ContextEvaluation", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to parse API response"])
+        }
+        
+        return boundary
     }
     
 }
@@ -287,8 +467,7 @@ class AppManager: ObservableObject {
             // Reset function calling state
             self.functionCalling.resetConversation()
             
-            // Clear transcriptions and keep last 10 event logs
-            self.appState.clearTranscriptions()
+            // Keep last 10 event logs
             self.appState.keepLastEventLogs(10)
             self.appState.updateCurrentPrompt("")
             
@@ -353,21 +532,60 @@ struct ContentView: View {
                             Text("Recent Transcriptions:")
                                 .font(.headline)
                             
-                            ForEach(appState.transcriptionItems.indices, id: \.self) { index in
-                                let item = appState.transcriptionItems[index]
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("\(index + 1). \(item.transcription)")
-                                        .font(.caption)
-                                        .padding(.bottom, 1)
+                            let visibleTranscriptions = appState.getDisplayTranscriptions()
+                            
+                            ForEach(visibleTranscriptions.indices, id: \.self) { index in
+                                let item = visibleTranscriptions[index]
+                                HStack(alignment: .top, spacing: 6) {
+                                    Circle()
+                                        .fill(item.isIncludedInContext ? Color.green : Color.red)
+                                        .frame(width: 8, height: 8)
+                                        .padding(.top, 4)
                                     
-                                    if let action = item.action {
-                                        Text("   ↳ Action: \(action)")
-                                            .font(.caption)
-                                            .foregroundColor(.blue)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 4) {
+                                            Text("[\(item.contextNumber)]")
+                                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                                .foregroundColor(item.isIncludedInContext ? .green : .red)
+                                            
+                                            Text(item.transcription)
+                                                .font(.caption)
+                                                .foregroundColor(item.isIncludedInContext ? .primary : .secondary)
+                                        }
+                                        
+                                        if let action = item.action {
+                                            Text("   ↳ Action: \(action)")
+                                                .font(.caption)
+                                                .foregroundColor(.blue)
+                                        }
                                     }
                                 }
                                 .padding(.vertical, 2)
                             }
+                        }
+                    }
+                    
+                    if appState.currentOperation != nil {
+                        Divider()
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Current Operation:")
+                                .font(.headline)
+                            
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                    .frame(width: 16, height: 16)
+                                
+                                Text(appState.currentOperation ?? "")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.blue)
+                                
+                                Text("(\(appState.currentOperationStatus))")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 4)
                         }
                     }
                     
@@ -436,7 +654,10 @@ class FunctionCalling {
     func processTranscription(_ transcript: String) {
         appState.log("FunctionCalling", "Processing transcription: \(transcript)")
         
-        // Add the user's message to the conversation
+        // Rebuild conversation from included transcriptions only
+        rebuildConversationFromIncludedTranscriptions()
+        
+        // Add the current user message
         let userMessage: [String: Any] = [
             "role": "user",
             "content": transcript
@@ -445,6 +666,36 @@ class FunctionCalling {
         
         // Call the responses API with our defined functions
         callResponsesAPI(input: currentConversation)
+    }
+    
+    private func rebuildConversationFromIncludedTranscriptions() {
+        // Start fresh with system message
+        currentConversation = []
+        
+        let systemMessage: [String: Any] = [
+            "role": "system",
+            "content": INSTRUCTIONS
+        ]
+        currentConversation.append(systemMessage)
+        
+        // Add only included transcriptions
+        let includedTranscriptions = appState.getIncludedTranscriptions()
+        
+        for item in includedTranscriptions.reversed() {
+            let userMessage: [String: Any] = [
+                "role": "user",
+                "content": item.transcription
+            ]
+            currentConversation.append(userMessage)
+            
+            if let action = item.action {
+                let assistantMessage: [String: Any] = [
+                    "role": "assistant",
+                    "content": "Executed: \(action)"
+                ]
+                currentConversation.append(assistantMessage)
+            }
+        }
     }
     
     private func callResponsesAPI(input: [[String: Any]]) {
@@ -583,6 +834,8 @@ class FunctionCalling {
         }
         
         appState.appendAction(actionName: functionName)
+        appState.setCurrentOperation(functionName, status: "executing")
+        
         switch functionName {
         case "editPrompt":
             guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
@@ -613,9 +866,15 @@ class FunctionCalling {
         case "escape":
             handleEscape(callID: callID)
             
-        case "clear":
-            handleClear(callID: callID)
-            
+        case "setContextBoundary":
+            guard let argumentsDict = try? JSONSerialization.jsonObject(with: argumentsData, options: []) as? [String: Any],
+                  let boundary = argumentsDict["boundary"] as? Int else {
+                appState.log("FunctionCalling", "Failed to parse setContextBoundary arguments")
+                let errorOutput = "Error: Failed to parse the boundary argument"
+                sendFunctionOutputToModel(callID: callID, output: errorOutput)
+                return
+            }
+            handleSetContextBoundary(boundary: boundary, callID: callID)
             
         default:
             appState.log("FunctionCalling", "Unknown function: \(functionName)")
@@ -754,32 +1013,16 @@ class FunctionCalling {
         executeKeystrokesInTerminal("key code 53 -- escape key", actionName: "escape", callID: callID)
     }
     
-    func handleClear(callID: String) {
-        _ = """
-        key code 53 -- escape key
-        delay 0.1
-        key code 53 -- escape key
-        """
+    func handleSetContextBoundary(boundary: Int, callID: String) {
+        let actualBoundary = boundary >= 999 ? Int.max : boundary
+        appState.setContextBoundary(actualBoundary)
         
-        // Clear the conversation context but maintain the system instructions
-        currentConversation = []
+        let output = actualBoundary == Int.max ? 
+            "Context set to include all transcriptions" : 
+            "Context set to include last \(actualBoundary) transcriptions"
         
-        // Re-add the system instructions
-        let systemMessage: [String: Any] = [
-            "role": "system",
-            "content": INSTRUCTIONS
-        ]
-        currentConversation.append(systemMessage)
-        
-        // Clear UI elements
-        appState.clearTranscriptions()
-        
-        appState.log("FunctionCalling", "Cleared conversation context")
-        
-        let output = "Interface and conversation context cleared"
         sendFunctionOutputToModel(callID: callID, output: output)
     }
-    
     
     func sendFunctionOutputToModel(callID: String, output: String) {
         let functionCallOutput: [String: Any] = [
@@ -790,6 +1033,15 @@ class FunctionCalling {
         
         // Just add the output to our conversation history
         currentConversation.append(functionCallOutput)
+        
+        // Update operation status
+        appState.setCurrentOperation(appState.currentOperation ?? "", status: "completed")
+        
+        // Clear operation after a short delay and update context
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.appState.clearCurrentOperation()
+            self.appState.updateContextAfterAction()
+        }
     }
 }
 let problematicCharacters: [Character] = {
@@ -1269,7 +1521,8 @@ class TranscriptionAPI {
                     
                 case "conversation.item.input_audio_transcription.delta":
                     if let delta = json["delta"] as? String {
-                       self.appState.appendDeltaTranscription(delta)
+                        self.appState.log("TranscriptionAPI", "Delta received: '\(delta)'")
+                        self.appState.appendDeltaTranscription(delta)
                     }
                     
                 case "conversation.item.input_audio_transcription.completed":
