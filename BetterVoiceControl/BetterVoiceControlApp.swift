@@ -1487,7 +1487,8 @@ class TranscriptionAPI {
                     return
                 }
                 // Only log certain event types to avoid console spam
-                if eventType != "conversation.item.input_audio_transcription.delta" {
+                if eventType != "conversation.item.input_audio_transcription.delta" && 
+                   eventType != "input_audio_buffer.append" {
                     self.appState.log("TranscriptionAPI", "Event type: \(eventType)")
                 }
                 
@@ -1510,7 +1511,7 @@ class TranscriptionAPI {
                     
                 case "conversation.item.input_audio_transcription.delta":
                     if let delta = json["delta"] as? String {
-                        self.appState.log("TranscriptionAPI", "Delta received: '\(delta)'")
+                        // Don't log deltas - too much clutter
                         self.appState.appendDeltaTranscription(delta)
                     }
                     
